@@ -1,6 +1,7 @@
 /**
  * QuizWin Embed Widget v1.1
  * Требует: <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
+ * CDN: https://cdn.jsdelivr.net/gh/WondigoStudio/quizwin-embed@latest/embed.js
  * Использование:
  *   <div data-qw-poll="123456" data-qw-key="qwk_ваш_ключ"></div>
  *   <script src="https://quizwin.free.nf/embed.js" defer></script>
@@ -8,7 +9,7 @@
 (function () {
   'use strict';
 
-  const API_BASE = 'https://quizwin.free.nf/api/pub';
+  const API_BASE = 'https://muddy-cell-5e80.windigo505official.workers.dev';
 
   const CSS = `
     .qw-widget * { box-sizing: border-box; margin: 0; padding: 0; }
