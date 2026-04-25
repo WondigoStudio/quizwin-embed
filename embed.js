@@ -3,7 +3,7 @@
  * Требует: <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
  * CDN: https://cdn.jsdelivr.net/gh/WondigoStudio/quizwin-embed@latest/embed.js
  * Использование:
- *   <div data-qw-poll="123456" data-qw-key="qwk_ваш_ключ"></div>
+ *   <div data-qw-poll="12345" data-qw-key="qwk_ваш_ключ"></div>
  *   <script src="https://quizwin.free.nf/embed.js" defer></script>
  */
 (function () {
