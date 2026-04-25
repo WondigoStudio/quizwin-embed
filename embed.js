@@ -3,7 +3,7 @@
  * Требует: <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
  * CDN: https://cdn.jsdelivr.net/gh/WondigoStudio/quizwin-embed@latest/embed.js
  * Использование:
- *   <div data-qw-poll="12345" data-qw-key="qwk_ваш_ключ"></div>
+ *   <div data-qw-poll="123456" data-qw-key="qwk_ваш_ключ"></div>
  *   <script src="https://quizwin.free.nf/embed.js" defer></script>
  */
 (function () {
@@ -207,14 +207,15 @@
 
   // ── Widget ─────────────────────────────────────────────────────────────────
   class QwWidget {
-    constructor(container, pollId, apiKey) {
-      this.container = container;
-      this.pollId    = pollId;
-      this.apiKey    = apiKey;
-      this.poll      = null;
-      this.step      = 0;
-      this.answers   = {};
-      this.submitted = false;
+    constructor(container, pollId, apiKey, backendUrl) {
+      this.container  = container;
+      this.pollId     = pollId;
+      this.apiKey     = apiKey;
+      this.backendUrl = backendUrl || null; // URL прокси на сервере пользователя
+      this.poll       = null;
+      this.step       = 0;
+      this.answers    = {};
+      this.submitted  = false;
       this.render(this._loader());
       this.load();
     }
@@ -433,17 +434,37 @@
       );
 
       try {
-        await apiFetch('/polls/' + this.pollId + '/vote', this.apiKey, {
-          method: 'POST',
-          body: JSON.stringify({
-            voter_id:   identity.voterId,
-            fp_id:      identity.fpId,
-            ls_key:     identity.lsKey,
-            cookie_key: identity.cookieKey,
-            simple_fp:  identity.simpleFp,
-            answers,
-          }),
-        });
+        if (this.backendUrl) {
+          // Голосуем через прокси пользователя (секретный ключ на его сервере)
+          const proxyUrl = this.backendUrl + '?path=/polls/' + this.pollId + '/vote';
+          const proxyRes = await fetch(proxyUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              voter_id:   identity.voterId,
+              fp_id:      identity.fpId,
+              ls_key:     identity.lsKey,
+              cookie_key: identity.cookieKey,
+              simple_fp:  identity.simpleFp,
+              answers,
+            }),
+          });
+          const proxyData = await proxyRes.json();
+          if (!proxyRes.ok) throw new Error(proxyData.error || 'Ошибка прокси');
+        } else {
+          // Голосуем напрямую через Worker с публичным ключом
+          await apiFetch('/polls/' + this.pollId + '/vote', this.apiKey, {
+            method: 'POST',
+            body: JSON.stringify({
+              voter_id:   identity.voterId,
+              fp_id:      identity.fpId,
+              ls_key:     identity.lsKey,
+              cookie_key: identity.cookieKey,
+              simple_fp:  identity.simpleFp,
+              answers,
+            }),
+          });
+        }
         this.renderThanks();
       } catch (e) {
         this.submitted = false;
@@ -522,7 +543,8 @@
         el.textContent = 'QuizWin: укажите data-qw-poll и data-qw-key';
         return;
       }
-      new QwWidget(el, parseInt(pollId), apiKey);
+      const backendUrl = el.dataset.qwBackend || null;
+      new QwWidget(el, parseInt(pollId), apiKey, backendUrl);
     });
   }
 
