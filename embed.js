@@ -488,7 +488,17 @@
       let resultsEl = null;
       if (poll.show_results) {
         try {
-          const r = await apiFetch('/polls/' + this.pollId + '/results', this.apiKey);
+          let r;
+          if (this.backendUrl) {
+            // Результаты через прокси с секретным ключом
+            const res = await fetch(
+              this.backendUrl + '?path=/polls/' + this.pollId + '/results',
+              { headers: { 'Content-Type': 'application/json' } }
+            );
+            r = await res.json();
+          } else {
+            r = await apiFetch('/polls/' + this.pollId + '/results', this.apiKey);
+          }
           resultsEl = this._renderResults(r);
         } catch (_) {}
       }
