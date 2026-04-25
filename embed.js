@@ -435,11 +435,13 @@
 
       try {
         if (this.backendUrl) {
-          // Голосуем через прокси пользователя (секретный ключ на его сервере)
+          // Голосуем через прокси пользователя с секретным ключом
           const proxyUrl = this.backendUrl + '?path=/polls/' + this.pollId + '/vote';
           const proxyRes = await fetch(proxyUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+            },
             body: JSON.stringify({
               voter_id:   identity.voterId,
               fp_id:      identity.fpId,
