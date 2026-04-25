@@ -246,7 +246,7 @@
         });
         try {
           const checkRes = await fetch(
-            'https://quizwin.free.nf/api/pub/polls/' + this.pollId + '/voted?' +
+            API_BASE + '/polls/' + this.pollId + '/voted?' +
             params.toString() + '&api_key=' + encodeURIComponent(this.apiKey)
           );
           const checkData = await checkRes.json();
