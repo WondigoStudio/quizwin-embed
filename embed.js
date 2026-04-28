@@ -427,6 +427,17 @@
         return sel;
       }
 
+      if (q.type === 'date') {
+        const inp = h('input', {
+          type: 'date',
+          className: 'qw-textarea',
+          style: 'min-height:auto;resize:none;max-width:220px;',
+        });
+        inp.value = saved.text_value || '';
+        inp.addEventListener('change', () => { this.answers[q.id] = { text_value: inp.value }; });
+        return inp;
+      }
+
       return h('div', {}, '(неизвестный тип вопроса)');
     }
 
