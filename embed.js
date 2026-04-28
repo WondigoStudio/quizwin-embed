@@ -555,8 +555,8 @@
               cookie_key: identity.cookieKey,
               simple_fp:  identity.simpleFp,
               answers,
-            }}),
-          }});
+            }),
+          });
           const proxyData = await proxyRes.json();
           if (!proxyRes.ok) throw new Error(proxyData.error || 'Ошибка прокси');
         } else {
@@ -570,8 +570,8 @@
               cookie_key: identity.cookieKey,
               simple_fp:  identity.simpleFp,
               answers,
-            }}),
-          }});
+            }),
+          });
         }
         this.renderThanks();
       } catch (e) {
