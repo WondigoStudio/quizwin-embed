@@ -438,6 +438,67 @@
         return inp;
       }
 
+      if (q.type === 'time') {
+        const inp = h('input', {
+          type: 'time',
+          className: 'qw-textarea',
+          style: 'min-height:auto;resize:none;max-width:180px;',
+        });
+        inp.value = saved.text_value || '';
+        inp.addEventListener('change', () => { this.answers[q.id] = { text_value: inp.value }; });
+        return inp;
+      }
+
+      if (q.type === 'file') {
+        if (!this._pendingFiles) this._pendingFiles = {};
+        const self = this;
+        const wrap = h('div', { style: 'border:1px dashed #e5e7eb;border-radius:8px;padding:16px;text-align:center;' });
+
+        const render = (file, url) => {
+          wrap.innerHTML = '';
+          if (file || url) {
+            const name = file ? file.name : url.split('/').pop().split('?')[0];
+            const size = file ? ` (${(file.size/1024/1024).toFixed(2)} МБ)` : '';
+            wrap.appendChild(h('div', { style: 'color:#10b981;margin-bottom:6px;font-size:13px;' }, '✓ Файл выбран'));
+            wrap.appendChild(h('div', { style: 'font-size:11px;color:#6b7280;margin-bottom:6px;word-break:break-all;' }, name + size));
+            if (!file) {
+              wrap.appendChild(h('a', { href: url, target: '_blank', style: 'font-size:11px;color:#6366f1;' }, 'Открыть ↗'));
+            } else {
+              wrap.appendChild(h('div', { style: 'font-family:monospace;font-size:10px;color:#9ca3af;margin-bottom:6px;' }, '⏳ Файл загрузится при отправке'));
+            }
+            const del = h('button', { style: 'margin-left:8px;font-size:11px;color:#ef4444;background:none;border:none;cursor:pointer;' }, '✕ Удалить');
+            del.addEventListener('click', () => {
+              delete self._pendingFiles[q.id];
+              self.answers[q.id] = { text_value: '' };
+              render(null, '');
+            });
+            wrap.appendChild(del);
+          } else {
+            wrap.appendChild(h('div', { style: 'font-size:24px;margin-bottom:6px;' }, '📎'));
+            wrap.appendChild(h('div', { style: 'font-size:13px;color:#6b7280;margin-bottom:10px;' }, 'Выберите файл · до 10 МБ'));
+            const inp = document.createElement('input');
+            inp.type = 'file';
+            inp.style.display = 'none';
+            inp.addEventListener('change', () => {
+              const f = inp.files[0];
+              if (!f) return;
+              if (f.size > 10485760) { alert('Файл больше 10 МБ'); return; }
+              self._pendingFiles[q.id] = f;
+              self.answers[q.id] = { text_value: 'pending' };
+              render(f, '');
+            });
+            const btn = h('label', { style: 'display:inline-flex;align-items:center;gap:6px;background:#6366f1;color:#fff;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer;' }, '📎 Выбрать файл');
+            btn.appendChild(inp);
+            wrap.appendChild(btn);
+          }
+        };
+
+        const saved = this.answers[q.id] || {};
+        const savedUrl = saved.text_value && saved.text_value !== 'pending' ? saved.text_value : '';
+        render(this._pendingFiles?.[q.id] || null, savedUrl);
+        return wrap;
+      }
+
       return h('div', {}, '(неизвестный тип вопроса)');
     }
 
@@ -494,8 +555,8 @@
               cookie_key: identity.cookieKey,
               simple_fp:  identity.simpleFp,
               answers,
-            }),
-          });
+            }}),
+          }});
           const proxyData = await proxyRes.json();
           if (!proxyRes.ok) throw new Error(proxyData.error || 'Ошибка прокси');
         } else {
@@ -509,8 +570,8 @@
               cookie_key: identity.cookieKey,
               simple_fp:  identity.simpleFp,
               answers,
-            }),
-          });
+            }}),
+          }});
         }
         this.renderThanks();
       } catch (e) {
