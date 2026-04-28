@@ -393,6 +393,40 @@
         return wrap;
       }
 
+      if (q.type === 'text_line') {
+        const inp = h('input', {
+          type: 'text',
+          className: 'qw-textarea',
+          placeholder: 'Ваш ответ...',
+          style: 'min-height:auto;resize:none;',
+        });
+        inp.style.minHeight = 'auto';
+        inp.value = saved.text_value || '';
+        inp.addEventListener('input', () => { this.answers[q.id] = { text_value: inp.value }; });
+        return inp;
+      }
+
+      if (q.type === 'dropdown') {
+        const sel = h('select', { className: 'qw-textarea', style: 'min-height:auto;resize:none;cursor:pointer;appearance:auto;padding:10px 12px;' });
+        const placeholder = h('option', { value: '' }, '— Выберите вариант —');
+        sel.appendChild(placeholder);
+        (q.options || []).forEach(opt => {
+          const isSel = (saved.option_ids || []).includes(opt.id);
+          const option = h('option', { value: opt.id }, opt.text);
+          if (isSel) option.setAttribute('selected', '');
+          sel.appendChild(option);
+        });
+        sel.addEventListener('change', () => {
+          const val = parseInt(sel.value);
+          this.answers[q.id] = { option_ids: val ? [val] : [] };
+        });
+        // Восстанавливаем значение
+        if (saved.option_ids && saved.option_ids.length) {
+          sel.value = saved.option_ids[0];
+        }
+        return sel;
+      }
+
       return h('div', {}, '(неизвестный тип вопроса)');
     }
 
