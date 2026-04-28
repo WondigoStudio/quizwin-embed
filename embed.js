@@ -505,10 +505,11 @@
     next() {
       const q   = this.poll.questions[this.step];
       const ans = this.answers[q.id];
-      const isEmpty = !ans || (
+      const hasPendingFile = q.type === 'file' && this._pendingFiles && this._pendingFiles[q.id];
+      const isEmpty = !hasPendingFile && (!ans || (
         (!ans.option_ids || ans.option_ids.length === 0) &&
-        (!ans.text_value || ans.text_value.trim() === '')
-      );
+        (!ans.text_value || ans.text_value.trim() === '' || ans.text_value === 'pending')
+      ));
       if (q.required && isEmpty) {
         alert('Пожалуйста, ответьте на вопрос перед тем как продолжить.');
         return;
@@ -540,6 +541,20 @@
       );
 
       try {
+        // Загружаем pending файлы на Cloudinary перед отправкой
+        if (this._pendingFiles && Object.keys(this._pendingFiles).length) {
+          for (const [qid, file] of Object.entries(this._pendingFiles)) {
+            const fd = new FormData();
+            fd.append('file', file);
+            fd.append('upload_preset', 'ml_default');
+            const res = await fetch('https://api.cloudinary.com/v1_1/dd5iofmfg/auto/upload', { method:'POST', body:fd });
+            const data = await res.json();
+            if (!data.secure_url) throw new Error('Не удалось загрузить файл');
+            this.answers[qid] = { text_value: data.secure_url };
+            delete this._pendingFiles[qid];
+          }
+        }
+
         if (this.backendUrl) {
           // Голосуем через прокси пользователя с секретным ключом
           const proxyUrl = this.backendUrl + '?path=/polls/' + this.pollId + '/vote';
