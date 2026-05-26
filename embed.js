@@ -640,43 +640,46 @@
     }
 
    _renderResults(r) {
-      const wrap = h('div', { className: 'qw-results', style: 'margin-top:16px' });
-      r.questions.forEach(q => {
-        // Для yn — синтезируем options из text_answers
-        let options = q.options;
-        if ((!options || options.length === 0) && q.type === 'yn' && q.text_answers) {
-          const total = q.text_answers.reduce((s, a) => s + (a.count || 0), 0);
-          options = q.text_answers.map(a => ({
-            text: a.value,
-            percent: total > 0 ? Math.round((a.count / total) * 100) : 0,
-          }));
-        }
-    
-        if (!options || options.length === 0) return;
-    
-        wrap.appendChild(h('div', {},
-          h('div', { className: 'qw-result-q' }, q.text),
-          h('div', { className: 'qw-result-bar-wrap' },
-            ...options.map(opt =>
-              h('div', { className: 'qw-result-row' },
-                h('span', { className: 'qw-result-label', title: opt.text }, opt.text),
-                h('div', { className: 'qw-result-track' },
-                  h('div', { className: 'qw-result-fill', style: 'width:' + opt.percent + '%' })
-                ),
-                h('span', { className: 'qw-result-pct' }, opt.percent + '%')
-              )
-            )
-          )
-        ));
-      });
-      if (r.respondents) {
-        wrap.appendChild(h('div', { style: 'text-align:center;font-size:12px;color:#9ca3af;margin-top:8px' },
-          'Проголосовало: ' + r.respondents
-        ));
+  const wrap = h('div', { className: 'qw-results', style: 'margin-top:16px' });
+  r.questions.forEach(q => {
+    let options = q.options;
+
+    // Для yn (и scale/text): если votes все нули, но есть text_answers — считаем вручную
+    if (options && options.length > 0 && q.text_answers && q.text_answers.length > 0) {
+      const allZero = options.every(o => (o.votes || 0) === 0);
+      if (allZero) {
+        const total = q.text_answers.length;
+        options = options.map(opt => {
+          const votes = q.text_answers.filter(a => a === opt.text).length;
+          return { ...opt, votes, percent: Math.round((votes / total) * 100) };
+        });
       }
-      return wrap;
     }
+
+    if (!options || options.length === 0) return;
+
+    wrap.appendChild(h('div', {},
+      h('div', { className: 'qw-result-q' }, q.text),
+      h('div', { className: 'qw-result-bar-wrap' },
+        ...options.map(opt =>
+          h('div', { className: 'qw-result-row' },
+            h('span', { className: 'qw-result-label', title: opt.text }, opt.text),
+            h('div', { className: 'qw-result-track' },
+              h('div', { className: 'qw-result-fill', style: 'width:' + opt.percent + '%' })
+            ),
+            h('span', { className: 'qw-result-pct' }, opt.percent + '%')
+          )
+        )
+      )
+    ));
+  });
+  if (r.respondents) {
+    wrap.appendChild(h('div', { style: 'text-align:center;font-size:12px;color:#9ca3af;margin-top:8px' },
+      'Проголосовало: ' + r.respondents
+    ));
   }
+  return wrap;
+}
 
   // ── Auto-init ──────────────────────────────────────────────────────────────
   function init() {
