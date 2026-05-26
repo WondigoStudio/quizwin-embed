@@ -619,6 +619,8 @@
               { headers: { 'Content-Type': 'application/json' } }
             );
             r = await res.json();
+            console.log(JSON.stringify(r, null, 2)); // ← добавьте эту строку
+
           } else {
             r = await apiFetch('/polls/' + this.pollId + '/results', this.apiKey);
           }
