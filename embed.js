@@ -637,14 +637,25 @@
       this.render(h('div', {}, header, thanks));
     }
 
-    _renderResults(r) {
+   _renderResults(r) {
       const wrap = h('div', { className: 'qw-results', style: 'margin-top:16px' });
       r.questions.forEach(q => {
-        if (!q.options || q.options.length === 0) return;
+        // Для yn — синтезируем options из text_answers
+        let options = q.options;
+        if ((!options || options.length === 0) && q.type === 'yn' && q.text_answers) {
+          const total = q.text_answers.reduce((s, a) => s + (a.count || 0), 0);
+          options = q.text_answers.map(a => ({
+            text: a.value,
+            percent: total > 0 ? Math.round((a.count / total) * 100) : 0,
+          }));
+        }
+    
+        if (!options || options.length === 0) return;
+    
         wrap.appendChild(h('div', {},
           h('div', { className: 'qw-result-q' }, q.text),
           h('div', { className: 'qw-result-bar-wrap' },
-            ...q.options.map(opt =>
+            ...options.map(opt =>
               h('div', { className: 'qw-result-row' },
                 h('span', { className: 'qw-result-label', title: opt.text }, opt.text),
                 h('div', { className: 'qw-result-track' },
