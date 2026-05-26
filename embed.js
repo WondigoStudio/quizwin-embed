@@ -680,7 +680,7 @@
   }
   return wrap;
 }
-
+}
   // ── Auto-init ──────────────────────────────────────────────────────────────
   function init() {
     document.querySelectorAll('[data-qw-poll]').forEach(el => {
