@@ -1,5 +1,5 @@
 /**
- * QuizWin Embed Widget v1.1
+ * QuizWin Embed Widget v1.2
  * Требует: <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
  * CDN: https://cdn.jsdelivr.net/gh/WondigoStudio/quizwin-embed@latest/embed.js
  * Использование:
@@ -63,6 +63,10 @@
     .qw-thanks { text-align: center; padding: 28px; }
     .qw-thanks h3 { font-size: 20px; color: #6366f1; margin-bottom: 8px; }
     .qw-thanks p  { font-size: 14px; color: #6b7280; }
+    .qw-captcha-wrap { margin-top: 18px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+    .qw-captcha-label { font-size: 12px; color: #9ca3af; }
+    .qw-captcha-error { font-size: 12px; color: #ef4444; margin-top: 4px; display: none; }
+    .qw-captcha-error.visible { display: block; }
   `;
 
   if (!document.getElementById('qw-styles')) {
@@ -216,6 +220,7 @@
       this.step       = 0;
       this.answers    = {};
       this.submitted  = false;
+      this._captchaToken = null;  // токен капчи, заполняется после прохождения
       this.render(this._loader());
       this.load();
     }
@@ -235,7 +240,25 @@
 
     async load() {
       try {
-        this.poll = await apiFetch('/polls/' + this.pollId, this.apiKey);
+        // apiFetch бросит ошибку при не-200. При geo_blocked (403) и
+        // captcha_required нам нужно поймать специфичный код — делаем
+        // сырой fetch чтобы читать тело при любом статусе.
+        const rawRes = await fetch(
+          API_BASE + '/polls/' + this.pollId + '?api_key=' + encodeURIComponent(this.apiKey)
+        );
+        const rawData = await rawRes.json();
+
+        if (!rawRes.ok) {
+          if (rawData.error === 'geo_blocked') {
+            this.render(h('div', { className: 'qw-body' },
+              h('div', { className: 'qw-error' }, '🌍 Опрос недоступен в вашем регионе')
+            ));
+            return;
+          }
+          throw new Error(rawData.error || ('HTTP ' + rawRes.status));
+        }
+
+        this.poll = rawData;
 
         // Проверяем — голосовал ли уже этот пользователь
         const identity = await getIdentity();
@@ -274,6 +297,8 @@
         poll.description ? h('p', {}, poll.description) : null
       );
 
+      const isLastStep = this.step === total - 1;
+
       const body = h('div', { className: 'qw-body' },
         h('div', { className: 'qw-progress-bar' },
           h('div', { className: 'qw-progress-fill', style: 'width:' + pct + '%' })
@@ -281,13 +306,15 @@
         h('div', { className: 'qw-step-label' }, 'Вопрос ' + (this.step + 1) + ' из ' + total),
         h('div', { className: 'qw-question' }, q.text),
         this._renderInput(q),
+        // Капча показывается только на последнем шаге если включена в опросе
+        isLastStep && poll.captcha ? this._renderCaptcha(poll.captcha) : null,
         h('div', { className: 'qw-actions' },
           ...[
             this.step > 0
               ? h('button', { className: 'qw-btn qw-btn-ghost', onClick: () => this.prev() }, '← Назад')
               : null,
             h('button', { className: 'qw-btn qw-btn-primary', onClick: () => this.next() },
-              this.step === total - 1 ? '✓ Отправить' : 'Далее →'
+              isLastStep ? '✓ Отправить' : 'Далее →'
             ),
           ].filter(Boolean)
         )
@@ -393,113 +420,118 @@
         return wrap;
       }
 
-      if (q.type === 'text_line') {
-        const inp = h('input', {
-          type: 'text',
-          className: 'qw-textarea',
-          placeholder: 'Ваш ответ...',
-          style: 'min-height:auto;resize:none;',
-        });
-        inp.style.minHeight = 'auto';
-        inp.value = saved.text_value || '';
-        inp.addEventListener('input', () => { this.answers[q.id] = { text_value: inp.value }; });
-        return inp;
-      }
-
-      if (q.type === 'dropdown') {
-        const sel = h('select', { className: 'qw-textarea', style: 'min-height:auto;resize:none;cursor:pointer;appearance:auto;padding:10px 12px;' });
-        const placeholder = h('option', { value: '' }, '— Выберите вариант —');
-        sel.appendChild(placeholder);
-        (q.options || []).forEach(opt => {
-          const isSel = (saved.option_ids || []).includes(opt.id);
-          const option = h('option', { value: opt.id }, opt.text);
-          if (isSel) option.setAttribute('selected', '');
-          sel.appendChild(option);
-        });
-        sel.addEventListener('change', () => {
-          const val = parseInt(sel.value);
-          this.answers[q.id] = { option_ids: val ? [val] : [] };
-        });
-        // Восстанавливаем значение
-        if (saved.option_ids && saved.option_ids.length) {
-          sel.value = saved.option_ids[0];
-        }
-        return sel;
-      }
-
-      if (q.type === 'date') {
-        const inp = h('input', {
-          type: 'date',
-          className: 'qw-textarea',
-          style: 'min-height:auto;resize:none;max-width:220px;',
-        });
-        inp.value = saved.text_value || '';
-        inp.addEventListener('change', () => { this.answers[q.id] = { text_value: inp.value }; });
-        return inp;
-      }
-
-      if (q.type === 'time') {
-        const inp = h('input', {
-          type: 'time',
-          className: 'qw-textarea',
-          style: 'min-height:auto;resize:none;max-width:180px;',
-        });
-        inp.value = saved.text_value || '';
-        inp.addEventListener('change', () => { this.answers[q.id] = { text_value: inp.value }; });
-        return inp;
-      }
-
-      if (q.type === 'file') {
-        if (!this._pendingFiles) this._pendingFiles = {};
-        const self = this;
-        const wrap = h('div', { style: 'border:1px dashed #e5e7eb;border-radius:8px;padding:16px;text-align:center;' });
-
-        const render = (file, url) => {
-          wrap.innerHTML = '';
-          if (file || url) {
-            const name = file ? file.name : url.split('/').pop().split('?')[0];
-            const size = file ? ` (${(file.size/1024/1024).toFixed(2)} МБ)` : '';
-            wrap.appendChild(h('div', { style: 'color:#10b981;margin-bottom:6px;font-size:13px;' }, '✓ Файл выбран'));
-            wrap.appendChild(h('div', { style: 'font-size:11px;color:#6b7280;margin-bottom:6px;word-break:break-all;' }, name + size));
-            if (!file) {
-              wrap.appendChild(h('a', { href: url, target: '_blank', style: 'font-size:11px;color:#6366f1;' }, 'Открыть ↗'));
-            } else {
-              wrap.appendChild(h('div', { style: 'font-family:monospace;font-size:10px;color:#9ca3af;margin-bottom:6px;' }, '⏳ Файл загрузится при отправке'));
-            }
-            const del = h('button', { style: 'margin-left:8px;font-size:11px;color:#ef4444;background:none;border:none;cursor:pointer;' }, '✕ Удалить');
-            del.addEventListener('click', () => {
-              delete self._pendingFiles[q.id];
-              self.answers[q.id] = { text_value: '' };
-              render(null, '');
-            });
-            wrap.appendChild(del);
-          } else {
-            wrap.appendChild(h('div', { style: 'font-size:24px;margin-bottom:6px;' }, '📎'));
-            wrap.appendChild(h('div', { style: 'font-size:13px;color:#6b7280;margin-bottom:10px;' }, 'Выберите файл · до 10 МБ'));
-            const inp = document.createElement('input');
-            inp.type = 'file';
-            inp.style.display = 'none';
-            inp.addEventListener('change', () => {
-              const f = inp.files[0];
-              if (!f) return;
-              if (f.size > 10485760) { alert('Файл больше 10 МБ'); return; }
-              self._pendingFiles[q.id] = f;
-              self.answers[q.id] = { text_value: 'pending' };
-              render(f, '');
-            });
-            const btn = h('label', { style: 'display:inline-flex;align-items:center;gap:6px;background:#6366f1;color:#fff;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer;' }, '📎 Выбрать файл');
-            btn.appendChild(inp);
-            wrap.appendChild(btn);
-          }
-        };
-
-        const saved = this.answers[q.id] || {};
-        const savedUrl = saved.text_value && saved.text_value !== 'pending' ? saved.text_value : '';
-        render(this._pendingFiles?.[q.id] || null, savedUrl);
-        return wrap;
-      }
-
       return h('div', {}, '(неизвестный тип вопроса)');
+    }
+
+    // ── Капча ─────────────────────────────────────────────────────────────────
+    // captchaConfig = { type: 'hcaptcha'|'turnstile'|'recaptcha', site_key: '...' }
+    _renderCaptcha(captchaConfig) {
+      const self = this;
+      const wrap = h('div', { className: 'qw-captcha-wrap' });
+      const label = h('div', { className: 'qw-captcha-label' }, '🛡️ Подтвердите, что вы не робот');
+      const errorEl = h('div', { className: 'qw-captcha-error' }, 'Пройдите проверку перед отправкой');
+      const widgetEl = h('div', { id: 'qw-captcha-widget-' + this.pollId });
+
+      wrap.appendChild(label);
+      wrap.appendChild(widgetEl);
+      wrap.appendChild(errorEl);
+
+      // Сохраняем ссылку чтобы submit мог показать ошибку
+      this._captchaErrorEl = errorEl;
+
+      // Загружаем скрипт капчи и инициализируем виджет после рендера
+      setTimeout(() => self._initCaptchaWidget(captchaConfig, widgetEl), 0);
+
+      return wrap;
+    }
+
+    _initCaptchaWidget(cfg, container) {
+      const self = this;
+      const type = cfg.type;
+      const siteKey = cfg.site_key;
+
+      if (!siteKey) {
+        container.innerHTML = '<span style="font-size:12px;color:#ef4444">⚠️ captcha_site_key не настроен</span>';
+        return;
+      }
+
+      const scriptUrls = {
+        hcaptcha:  'https://js.hcaptcha.com/1/api.js?render=explicit',
+        turnstile: 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit',
+        recaptcha: 'https://www.google.com/recaptcha/api.js?render=explicit',
+      };
+
+      const scriptUrl = scriptUrls[type];
+      if (!scriptUrl) return;
+
+      // Коллбэк при получении токена
+      const callbackName = '_qwCaptchaCb_' + self.pollId;
+      window[callbackName] = function(token) {
+        self._captchaToken = token;
+        if (self._captchaErrorEl) self._captchaErrorEl.classList.remove('visible');
+      };
+      // Коллбэк при истечении токена
+      const expiredName = '_qwCaptchaExp_' + self.pollId;
+      window[expiredName] = function() { self._captchaToken = null; };
+
+      const doRender = () => {
+        try {
+          if (type === 'hcaptcha' && window.hcaptcha) {
+            window.hcaptcha.render(container, {
+              sitekey: siteKey,
+              callback: callbackName,
+              'expired-callback': expiredName,
+              theme: 'light',
+            });
+          } else if (type === 'turnstile' && window.turnstile) {
+            window.turnstile.render(container, {
+              sitekey: siteKey,
+              callback: callbackName,
+              'expired-callback': expiredName,
+              theme: 'light',
+            });
+          } else if (type === 'recaptcha' && window.grecaptcha) {
+            window.grecaptcha.ready(() => {
+              window.grecaptcha.render(container, {
+                sitekey: siteKey,
+                callback: callbackName,
+                'expired-callback': expiredName,
+                theme: 'light',
+                size: 'normal',
+              });
+            });
+          }
+        } catch(e) {
+          console.warn('QuizWin captcha render error:', e);
+        }
+      };
+
+      // Если скрипт уже загружен — рендерим сразу
+      const libReady = {
+        hcaptcha:  () => !!window.hcaptcha,
+        turnstile: () => !!window.turnstile,
+        recaptcha: () => !!(window.grecaptcha && window.grecaptcha.render),
+      };
+      if (libReady[type] && libReady[type]()) {
+        doRender();
+        return;
+      }
+
+      // Иначе — подгружаем скрипт
+      if (!document.querySelector('script[src*="' + (type === 'recaptcha' ? 'recaptcha' : type) + '"]')) {
+        const s = document.createElement('script');
+        s.src = scriptUrl;
+        s.async = true;
+        s.defer = true;
+        s.onload = doRender;
+        document.head.appendChild(s);
+      } else {
+        // Скрипт уже есть но API ещё не готово — ждём
+        const t = setInterval(() => {
+          if (libReady[type] && libReady[type]()) { clearInterval(t); doRender(); }
+        }, 100);
+        setTimeout(() => clearInterval(t), 5000);
+      }
     }
 
     next() {
@@ -515,6 +547,11 @@
         return;
       }
       if (this.step === this.poll.questions.length - 1) {
+        // Последний шаг — проверяем капчу если включена
+        if (this.poll.captcha && !this._captchaToken) {
+          if (this._captchaErrorEl) this._captchaErrorEl.classList.add('visible');
+          return;
+        }
         this.submit();
       } else {
         this.step++;
@@ -541,34 +578,19 @@
       );
 
       try {
-        // Загружаем pending файлы на Cloudinary перед отправкой
-        if (this._pendingFiles && Object.keys(this._pendingFiles).length) {
-          for (const [qid, file] of Object.entries(this._pendingFiles)) {
-            const fd = new FormData();
-            fd.append('file', file);
-            fd.append('upload_preset', 'ml_default');
-            const res = await fetch('https://api.cloudinary.com/v1_1/dd5iofmfg/auto/upload', { method:'POST', body:fd });
-            const data = await res.json();
-            if (!data.secure_url) throw new Error('Не удалось загрузить файл');
-            this.answers[qid] = { text_value: data.secure_url };
-            delete this._pendingFiles[qid];
-          }
-        }
-
         if (this.backendUrl) {
-          // Голосуем через прокси пользователя с секретным ключом
+          // Голосуем через прокси пользователя (секретный ключ на его сервере)
           const proxyUrl = this.backendUrl + '?path=/polls/' + this.pollId + '/vote';
           const proxyRes = await fetch(proxyUrl, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              voter_id:   identity.voterId,
-              fp_id:      identity.fpId,
-              ls_key:     identity.lsKey,
-              cookie_key: identity.cookieKey,
-              simple_fp:  identity.simpleFp,
+              voter_id:      identity.voterId,
+              fp_id:         identity.fpId,
+              ls_key:        identity.lsKey,
+              cookie_key:    identity.cookieKey,
+              simple_fp:     identity.simpleFp,
+              captcha_token: this._captchaToken || undefined,
               answers,
             }),
           });
@@ -579,11 +601,12 @@
           await apiFetch('/polls/' + this.pollId + '/vote', this.apiKey, {
             method: 'POST',
             body: JSON.stringify({
-              voter_id:   identity.voterId,
-              fp_id:      identity.fpId,
-              ls_key:     identity.lsKey,
-              cookie_key: identity.cookieKey,
-              simple_fp:  identity.simpleFp,
+              voter_id:      identity.voterId,
+              fp_id:         identity.fpId,
+              ls_key:        identity.lsKey,
+              cookie_key:    identity.cookieKey,
+              simple_fp:     identity.simpleFp,
+              captcha_token: this._captchaToken || undefined,
               answers,
             }),
           });
@@ -611,19 +634,7 @@
       let resultsEl = null;
       if (poll.show_results) {
         try {
-          let r;
-          if (this.backendUrl) {
-            // Результаты через прокси с секретным ключом
-            const res = await fetch(
-              this.backendUrl + '?path=/polls/' + this.pollId + '/results',
-              { headers: { 'Content-Type': 'application/json' } }
-            );
-            r = await res.json();
-            console.log(JSON.stringify(r, null, 2)); // ← добавьте эту строку
-
-          } else {
-            r = await apiFetch('/polls/' + this.pollId + '/results', this.apiKey);
-          }
+          const r = await apiFetch('/polls/' + this.pollId + '/results', this.apiKey);
           resultsEl = this._renderResults(r);
         } catch (_) {}
       }
@@ -639,48 +650,34 @@
       this.render(h('div', {}, header, thanks));
     }
 
-   _renderResults(r) {
-  const wrap = h('div', { className: 'qw-results', style: 'margin-top:16px' });
-  r.questions.forEach(q => {
-    let options = q.options;
-
-    // Для yn (и scale/text): если votes все нули, но есть text_answers — считаем вручную
-    if (options && options.length > 0 && q.text_answers && q.text_answers.length > 0) {
-      const allZero = options.every(o => (o.votes || 0) === 0);
-      if (allZero) {
-        const total = q.text_answers.length;
-        options = options.map(opt => {
-          const votes = q.text_answers.filter(a => a === opt.text).length;
-          return { ...opt, votes, percent: Math.round((votes / total) * 100) };
-        });
-      }
-    }
-
-    if (!options || options.length === 0) return;
-
-    wrap.appendChild(h('div', {},
-      h('div', { className: 'qw-result-q' }, q.text),
-      h('div', { className: 'qw-result-bar-wrap' },
-        ...options.map(opt =>
-          h('div', { className: 'qw-result-row' },
-            h('span', { className: 'qw-result-label', title: opt.text }, opt.text),
-            h('div', { className: 'qw-result-track' },
-              h('div', { className: 'qw-result-fill', style: 'width:' + opt.percent + '%' })
-            ),
-            h('span', { className: 'qw-result-pct' }, opt.percent + '%')
+    _renderResults(r) {
+      const wrap = h('div', { className: 'qw-results', style: 'margin-top:16px' });
+      r.questions.forEach(q => {
+        if (!q.options || q.options.length === 0) return;
+        wrap.appendChild(h('div', {},
+          h('div', { className: 'qw-result-q' }, q.text),
+          h('div', { className: 'qw-result-bar-wrap' },
+            ...q.options.map(opt =>
+              h('div', { className: 'qw-result-row' },
+                h('span', { className: 'qw-result-label', title: opt.text }, opt.text),
+                h('div', { className: 'qw-result-track' },
+                  h('div', { className: 'qw-result-fill', style: 'width:' + opt.percent + '%' })
+                ),
+                h('span', { className: 'qw-result-pct' }, opt.percent + '%')
+              )
+            )
           )
-        )
-      )
-    ));
-  });
-  if (r.respondents) {
-    wrap.appendChild(h('div', { style: 'text-align:center;font-size:12px;color:#9ca3af;margin-top:8px' },
-      'Проголосовало: ' + r.respondents
-    ));
+        ));
+      });
+      if (r.respondents) {
+        wrap.appendChild(h('div', { style: 'text-align:center;font-size:12px;color:#9ca3af;margin-top:8px' },
+          'Проголосовало: ' + r.respondents
+        ));
+      }
+      return wrap;
+    }
   }
-  return wrap;
-}
-}
+
   // ── Auto-init ──────────────────────────────────────────────────────────────
   function init() {
     document.querySelectorAll('[data-qw-poll]').forEach(el => {
