@@ -1,5 +1,5 @@
 /**
- * QuizWin Embed Widget v1.3
+ * QuizWin Embed Widget v1.3 (checkbox для всех 3 провайдеров)
  * Требует: <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
  * CDN: https://cdn.jsdelivr.net/gh/WondigoStudio/quizwin-embed@latest/embed.js
  * Использование:
@@ -64,8 +64,7 @@
     .qw-thanks h3 { font-size: 20px; color: #6366f1; margin-bottom: 8px; }
     .qw-thanks p  { font-size: 14px; color: #6b7280; }
     .qw-captcha-wrap { margin-top: 18px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
-    .qw-captcha-label { font-size: 12px; color: #9ca3af; line-height: 1.5; }
-    .qw-captcha-label a { color: #6366f1; }
+    .qw-captcha-label { font-size: 12px; color: #9ca3af; }
     .qw-captcha-error { font-size: 12px; color: #ef4444; margin-top: 4px; display: none; }
     .qw-captcha-error.visible { display: block; }
   `;
@@ -426,45 +425,24 @@
 
     // ── Капча ─────────────────────────────────────────────────────────────────
     // captchaConfig = { type: 'hcaptcha'|'turnstile'|'recaptcha', site_key: '...' }
-    //
-    // ВАЖНО: hCaptcha и Turnstile рендерятся как видимый чекбокс-виджет (v2-style).
-    // reCAPTCHA на бэкенде (vote.php/answer.php) проверяет `score` в ответе
-    // siteverify — это поле есть только у reCAPTCHA v3. v3-ключи нельзя
-    // рендерить через grecaptcha.render() (чекбокс) — Google вернёт
-    // "ERROR for site owner: Invalid key type", т.к. это вообще другой,
-    // невидимый флоу без чекбокса. Поэтому reCAPTCHA обрабатывается отдельно.
+    // Все три типа рендерятся как видимый чекбокс-виджет (нужен ключ
+    // reCAPTCHA именно типа "v2: Я не робот (Checkbox)" — v3/Invisible-ключи
+    // Google не даёт рендерить через grecaptcha.render()).
     _renderCaptcha(captchaConfig) {
       const self = this;
       const wrap = h('div', { className: 'qw-captcha-wrap' });
-      const errorEl = h('div', { className: 'qw-captcha-error' }, 'Пройдите проверку перед отправкой');
-      this._captchaErrorEl = errorEl;
-
-      if (captchaConfig.type === 'recaptcha') {
-        // v3 — невидимая проверка, без чекбокса. Google требует показывать
-        // эту дисклеймер-ссылку, если бейдж скрыт (мы его не скрываем,
-        // но текст добавляем для полного соответствия требованиям Google).
-        const note = h('div', { className: 'qw-captcha-label' },
-          'Эта форма защищена reCAPTCHA. Применяются ',
-          h('a', { href: 'https://policies.google.com/privacy', target: '_blank', rel: 'noopener' }, 'Политика конфиденциальности'),
-          ' и ',
-          h('a', { href: 'https://policies.google.com/terms', target: '_blank', rel: 'noopener' }, 'Условия использования'),
-          ' Google.'
-        );
-        wrap.appendChild(note);
-        wrap.appendChild(errorEl);
-
-        this._recaptchaSiteKey = captchaConfig.site_key;
-        setTimeout(() => self._loadRecaptchaV3(captchaConfig.site_key), 0);
-        return wrap;
-      }
-
-      // hCaptcha / Turnstile — обычный видимый чекбокс-виджет
       const label = h('div', { className: 'qw-captcha-label' }, '🛡️ Подтвердите, что вы не робот');
+      const errorEl = h('div', { className: 'qw-captcha-error' }, 'Пройдите проверку перед отправкой');
       const widgetEl = h('div', { id: 'qw-captcha-widget-' + this.pollId });
+
       wrap.appendChild(label);
       wrap.appendChild(widgetEl);
       wrap.appendChild(errorEl);
 
+      // Сохраняем ссылку чтобы submit мог показать ошибку
+      this._captchaErrorEl = errorEl;
+
+      // Загружаем скрипт капчи и инициализируем виджет после рендера
       setTimeout(() => self._initCaptchaWidget(captchaConfig, widgetEl), 0);
 
       return wrap;
@@ -472,7 +450,7 @@
 
     _initCaptchaWidget(cfg, container) {
       const self = this;
-      const type = cfg.type; // 'hcaptcha' | 'turnstile' — reCAPTCHA обрабатывается в _loadRecaptchaV3
+      const type = cfg.type;
       const siteKey = cfg.site_key;
 
       if (!siteKey) {
@@ -483,6 +461,7 @@
       const scriptUrls = {
         hcaptcha:  'https://js.hcaptcha.com/1/api.js?render=explicit',
         turnstile: 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit',
+        recaptcha: 'https://www.google.com/recaptcha/api.js?render=explicit',
       };
 
       const scriptUrl = scriptUrls[type];
@@ -514,6 +493,24 @@
               'expired-callback': expiredName,
               theme: 'light',
             });
+          } else if (type === 'recaptcha' && window.grecaptcha) {
+            window.grecaptcha.ready(() => {
+              try {
+                window.grecaptcha.render(container, {
+                  sitekey: siteKey,
+                  callback: callbackName,
+                  'expired-callback': expiredName,
+                  theme: 'light',
+                  size: 'normal',
+                });
+              } catch (renderErr) {
+                // Самая частая причина — ключ не типа "v2 Checkbox"
+                // (например v3/Invisible/Enterprise). Нужен другой ключ
+                // из консоли Google, кодом это не обойти.
+                console.error('QuizWin: reCAPTCHA render failed — проверьте, что site_key создан как "v2: Я не робот (Checkbox)"', renderErr);
+                container.innerHTML = '<span style="font-size:12px;color:#ef4444">⚠️ Неверный тип ключа reCAPTCHA — нужен v2 Checkbox</span>';
+              }
+            });
           }
         } catch(e) {
           console.warn('QuizWin captcha render error:', e);
@@ -524,6 +521,7 @@
       const libReady = {
         hcaptcha:  () => !!window.hcaptcha,
         turnstile: () => !!window.turnstile,
+        recaptcha: () => !!(window.grecaptcha && window.grecaptcha.render),
       };
       if (libReady[type] && libReady[type]()) {
         doRender();
@@ -531,7 +529,7 @@
       }
 
       // Иначе — подгружаем скрипт
-      if (!document.querySelector('script[src*="' + type + '"]')) {
+      if (!document.querySelector('script[src*="' + (type === 'recaptcha' ? 'recaptcha' : type) + '"]')) {
         const s = document.createElement('script');
         s.src = scriptUrl;
         s.async = true;
@@ -544,63 +542,6 @@
           if (libReady[type] && libReady[type]()) { clearInterval(t); doRender(); }
         }, 100);
         setTimeout(() => clearInterval(t), 5000);
-      }
-    }
-
-    // ── reCAPTCHA v3 (invisible, score-based) ───────────────────────────────
-    // Загружается со SITE_KEY прямо в URL скрипта (НЕ "?render=explicit" —
-    // тот режим только для v2-чекбокса и несовместим с v3-ключами).
-    _loadRecaptchaV3(siteKey) {
-      const self = this;
-
-      if (!siteKey) {
-        if (this._captchaErrorEl) {
-          this._captchaErrorEl.textContent = '⚠️ captcha_site_key не настроен';
-          this._captchaErrorEl.classList.add('visible');
-        }
-        return;
-      }
-
-      if (window.grecaptcha && window.grecaptcha.execute) {
-        self._recaptchaReady = true;
-        return;
-      }
-
-      const existing = document.querySelector('script[data-qw-recaptcha-v3]');
-      if (existing) {
-        const t = setInterval(() => {
-          if (window.grecaptcha && window.grecaptcha.execute) { clearInterval(t); self._recaptchaReady = true; }
-        }, 100);
-        setTimeout(() => clearInterval(t), 5000);
-        return;
-      }
-
-      const s = document.createElement('script');
-      s.src = 'https://www.google.com/recaptcha/api.js?render=' + encodeURIComponent(siteKey);
-      s.async = true;
-      s.defer = true;
-      s.setAttribute('data-qw-recaptcha-v3', '1');
-      s.onload = () => {
-        window.grecaptcha.ready(() => { self._recaptchaReady = true; });
-      };
-      s.onerror = () => {
-        if (self._captchaErrorEl) {
-          self._captchaErrorEl.textContent = '⚠️ Не удалось загрузить reCAPTCHA';
-          self._captchaErrorEl.classList.add('visible');
-        }
-      };
-      document.head.appendChild(s);
-    }
-
-    // Токены v3 живут ~2 минуты, поэтому берём свежий прямо перед отправкой,
-    // а не один раз при показе шага с капчей.
-    async _getRecaptchaV3Token() {
-      if (!window.grecaptcha || !window.grecaptcha.execute || !this._recaptchaSiteKey) return null;
-      try {
-        return await window.grecaptcha.execute(this._recaptchaSiteKey, { action: 'vote' });
-      } catch (e) {
-        console.warn('QuizWin reCAPTCHA v3 error:', e);
-        return null;
       }
     }
 
@@ -618,41 +559,15 @@
       }
       if (this.step === this.poll.questions.length - 1) {
         // Последний шаг — проверяем капчу если включена
-        if (this.poll.captcha) {
-          if (this.poll.captcha.type === 'recaptcha') {
-            // v3 невидимая — нет чекбокса для клика, токен берём асинхронно
-            this._submitWithRecaptchaV3();
-            return;
-          }
-          if (!this._captchaToken) {
-            if (this._captchaErrorEl) this._captchaErrorEl.classList.add('visible');
-            return;
-          }
+        if (this.poll.captcha && !this._captchaToken) {
+          if (this._captchaErrorEl) this._captchaErrorEl.classList.add('visible');
+          return;
         }
         this.submit();
       } else {
         this.step++;
         this.renderStep();
       }
-    }
-
-    async _submitWithRecaptchaV3() {
-      if (this._captchaErrorEl) this._captchaErrorEl.classList.remove('visible');
-      if (this._nextBtn) {
-        this._nextBtn.disabled = true;
-        this._nextBtn.textContent = 'Проверка...';
-      }
-      const token = await this._getRecaptchaV3Token();
-      if (!token) {
-        if (this._captchaErrorEl) this._captchaErrorEl.classList.add('visible');
-        if (this._nextBtn) {
-          this._nextBtn.disabled = false;
-          this._nextBtn.textContent = '✓ Отправить';
-        }
-        return;
-      }
-      this._captchaToken = token;
-      this.submit();
     }
 
     prev() {
