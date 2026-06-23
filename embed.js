@@ -76,8 +76,6 @@
     document.head.appendChild(style);
   }
 
-  // ── Идентификация — те же ключи что в poll.html ────────────────────────────
-  // localStorage: qw_anon_key, cookie: qw_anon — синхронизированы с основным сайтом
   function _getSimpleFingerprint() {
     const d = [
       navigator.userAgent, navigator.language,
@@ -101,7 +99,6 @@
     document.cookie = name + '=' + val + '; expires=' + exp + '; path=/; SameSite=Lax';
   }
 
-  // Ждём пока FingerprintJS появится в window (может грузиться параллельно с embed.js)
   function waitForFP(timeout) {
     timeout = timeout || 3000;
     return new Promise(function(resolve) {
@@ -127,7 +124,6 @@
       ctx.fillStyle = 'rgba(102,204,0,0.7)';
       ctx.fillText('QuizWin fp', 4, 17);
       const data = canvas.toDataURL();
-      // Хешируем строку в число
       let h = 0;
       for (let i = 0; i < data.length; i++) { h = ((h << 5) - h) + data.charCodeAt(i); h |= 0; }
       return 'cfp_' + Math.abs(h).toString(36);
@@ -137,27 +133,22 @@
   }
 
   async function getIdentity() {
-    // fp_id — canvas fingerprint (стабильный, без внешних зависимостей)
-    // Пробуем FingerprintJS если доступен, иначе canvas
     let fpId = '';
     try {
-      await waitForFP(1500); // ждём не более 1.5с
+      await waitForFP(1500);
       if (typeof FingerprintJS !== 'undefined') {
         const fp = await FingerprintJS.load();
         fpId = (await fp.get()).visitorId;
       }
     } catch(e) {}
-    // Fallback на canvas если FingerprintJS не дал результат
     if (!fpId) fpId = _getCanvasFingerprint();
 
-    // ls_key — тот же ключ qw_anon_key что в poll.html
     let lsKey = localStorage.getItem('qw_anon_key');
     if (!lsKey) {
       lsKey = 'ls_' + Date.now() + '_' + Math.random().toString(36).slice(2);
       localStorage.setItem('qw_anon_key', lsKey);
     }
 
-    // cookie_key — тот же cookie qw_anon что в poll.html
     let cookieKey = _getCookie('qw_anon');
     if (!cookieKey) {
       cookieKey = 'ck_' + Date.now() + '_' + Math.random().toString(36).slice(2);
@@ -167,7 +158,7 @@
     const simpleFp = _getSimpleFingerprint();
 
     return {
-      voterId:   lsKey,       // voter_id = ls_key для совместимости
+      voterId:   lsKey,
       fpId:      fpId,
       lsKey:     lsKey,
       cookieKey: cookieKey,
@@ -175,7 +166,6 @@
     };
   }
 
-  // ── API ────────────────────────────────────────────────────────────────────
   async function apiFetch(path, apiKey, options) {
     options = options || {};
     const sep = path.includes('?') ? '&' : '?';
@@ -188,7 +178,6 @@
     return json;
   }
 
-  // ── DOM helper ─────────────────────────────────────────────────────────────
   function h(tag, attrs) {
     attrs = attrs || {};
     const children = Array.prototype.slice.call(arguments, 2);
@@ -209,18 +198,17 @@
     return el;
   }
 
-  // ── Widget ─────────────────────────────────────────────────────────────────
   class QwWidget {
     constructor(container, pollId, apiKey, backendUrl) {
       this.container  = container;
       this.pollId     = pollId;
       this.apiKey     = apiKey;
-      this.backendUrl = backendUrl || null; // URL прокси на сервере пользователя
+      this.backendUrl = backendUrl || null;
       this.poll       = null;
       this.step       = 0;
       this.answers    = {};
       this.submitted  = false;
-      this._captchaToken = null;  // токен капчи, заполняется после прохождения
+      this._captchaToken = null;
       this.render(this._loader());
       this.load();
     }
@@ -240,9 +228,6 @@
 
     async load() {
       try {
-        // apiFetch бросит ошибку при не-200. При geo_blocked (403) и
-        // captcha_required нам нужно поймать специфичный код — делаем
-        // сырой fetch чтобы читать тело при любом статусе.
         const rawRes = await fetch(
           API_BASE + '/polls/' + this.pollId + '?api_key=' + encodeURIComponent(this.apiKey)
         );
@@ -260,7 +245,6 @@
 
         this.poll = rawData;
 
-        // Проверяем — голосовал ли уже этот пользователь
         const identity = await getIdentity();
         const params = new URLSearchParams({
           fp_id:      identity.fpId      || '',
@@ -306,7 +290,6 @@
         h('div', { className: 'qw-step-label' }, 'Вопрос ' + (this.step + 1) + ' из ' + total),
         h('div', { className: 'qw-question' }, q.text),
         this._renderInput(q),
-        // Капча показывается только на последнем шаге если включена в опросе
         isLastStep && poll.captcha ? this._renderCaptcha(poll.captcha) : null,
         h('div', { className: 'qw-actions' },
           ...[
@@ -423,11 +406,6 @@
       return h('div', {}, '(неизвестный тип вопроса)');
     }
 
-    // ── Капча ─────────────────────────────────────────────────────────────────
-    // captchaConfig = { type: 'hcaptcha'|'turnstile'|'recaptcha', site_key: '...' }
-    // Все три типа рендерятся как видимый чекбокс-виджет (нужен ключ
-    // reCAPTCHA именно типа "v2: Я не робот (Checkbox)" — v3/Invisible-ключи
-    // Google не даёт рендерить через grecaptcha.render()).
     _renderCaptcha(captchaConfig) {
       const self = this;
       const wrap = h('div', { className: 'qw-captcha-wrap' });
@@ -439,10 +417,8 @@
       wrap.appendChild(widgetEl);
       wrap.appendChild(errorEl);
 
-      // Сохраняем ссылку чтобы submit мог показать ошибку
       this._captchaErrorEl = errorEl;
 
-      // Загружаем скрипт капчи и инициализируем виджет после рендера
       setTimeout(() => self._initCaptchaWidget(captchaConfig, widgetEl), 0);
 
       return wrap;
@@ -467,13 +443,11 @@
       const scriptUrl = scriptUrls[type];
       if (!scriptUrl) return;
 
-      // Коллбэк при получении токена
       const callbackName = '_qwCaptchaCb_' + self.pollId;
       window[callbackName] = function(token) {
         self._captchaToken = token;
         if (self._captchaErrorEl) self._captchaErrorEl.classList.remove('visible');
       };
-      // Коллбэк при истечении токена
       const expiredName = '_qwCaptchaExp_' + self.pollId;
       window[expiredName] = function() { self._captchaToken = null; };
 
@@ -504,9 +478,6 @@
                   size: 'normal',
                 });
               } catch (renderErr) {
-                // Самая частая причина — ключ не типа "v2 Checkbox"
-                // (например v3/Invisible/Enterprise). Нужен другой ключ
-                // из консоли Google, кодом это не обойти.
                 console.error('QuizWin: reCAPTCHA render failed — проверьте, что site_key создан как "v2: Я не робот (Checkbox)"', renderErr);
                 container.innerHTML = '<span style="font-size:12px;color:#ef4444">⚠️ Неверный тип ключа reCAPTCHA — нужен v2 Checkbox</span>';
               }
@@ -517,7 +488,6 @@
         }
       };
 
-      // Если скрипт уже загружен — рендерим сразу
       const libReady = {
         hcaptcha:  () => !!window.hcaptcha,
         turnstile: () => !!window.turnstile,
@@ -528,7 +498,6 @@
         return;
       }
 
-      // Иначе — подгружаем скрипт
       if (!document.querySelector('script[src*="' + (type === 'recaptcha' ? 'recaptcha' : type) + '"]')) {
         const s = document.createElement('script');
         s.src = scriptUrl;
@@ -537,7 +506,6 @@
         s.onload = doRender;
         document.head.appendChild(s);
       } else {
-        // Скрипт уже есть но API ещё не готово — ждём
         const t = setInterval(() => {
           if (libReady[type] && libReady[type]()) { clearInterval(t); doRender(); }
         }, 100);
@@ -558,7 +526,6 @@
         return;
       }
       if (this.step === this.poll.questions.length - 1) {
-        // Последний шаг — проверяем капчу если включена
         if (this.poll.captcha && !this._captchaToken) {
           if (this._captchaErrorEl) this._captchaErrorEl.classList.add('visible');
           return;
@@ -582,7 +549,6 @@
         this._nextBtn.textContent = 'Отправка...';
       }
 
-      // getIdentity — async, ждём FingerprintJS
       const identity = await getIdentity();
       const answers  = Object.entries(this.answers).map(([qid, ans]) =>
         Object.assign({ question_id: parseInt(qid) }, ans)
@@ -590,7 +556,6 @@
 
       try {
         if (this.backendUrl) {
-          // Голосуем через прокси пользователя (секретный ключ на его сервере)
           const proxyUrl = this.backendUrl + '?path=/polls/' + this.pollId + '/vote';
           const proxyRes = await fetch(proxyUrl, {
             method: 'POST',
@@ -608,7 +573,6 @@
           const proxyData = await proxyRes.json();
           if (!proxyRes.ok) throw new Error(proxyData.error || 'Ошибка прокси');
         } else {
-          // Голосуем напрямую через Worker с публичным ключом
           await apiFetch('/polls/' + this.pollId + '/vote', this.apiKey, {
             method: 'POST',
             body: JSON.stringify({
@@ -629,7 +593,8 @@
           this._nextBtn.disabled = false;
           this._nextBtn.textContent = '✓ Отправить';
         }
-        if (e.message.includes('уже проголосовал')) {
+        // Единое сообщение — синхронизировано с vote.php (п.55 отчёта)
+        if (e.message.includes('уже участвовал')) {
           this.renderThanks(true);
         } else {
           alert('Ошибка отправки: ' + e.message);
@@ -689,7 +654,6 @@
     }
   }
 
-  // ── Auto-init ──────────────────────────────────────────────────────────────
   function init() {
     document.querySelectorAll('[data-qw-poll]').forEach(el => {
       if (el.dataset.qwInit) return;
