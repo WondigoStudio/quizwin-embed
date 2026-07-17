@@ -1,6 +1,5 @@
 /**
- * QuizWin Embed Widget v1.5 (паритет с сайтом: 18+, survey-список,
- * настройки презентации, тема/обложка, разбор квиза, "пройти ещё раз")
+ * QuizWin Embed Widget v1.6 (настоящий Tier List через публичный API)
  * Требует: <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
  * CDN: https://cdn.jsdelivr.net/gh/WondigoStudio/quizwin-embed@latest/embed.js
  * Использование:
@@ -8,6 +7,13 @@
  *   <script src="https://quizwin.free.nf/embed.js" defer></script>
  *
  * ── История изменений ────────────────────────────────────────────────────
+ * v1.6 — Tier List через виджет теперь настоящий турнир на выбывание с
+ *        картинками (tlStart/_tlRender/_tlPick/_tlRenderResult), как на
+ *        сайте (poll.html), а не текстовый реордеринг ↑/↓ без картинок.
+ *        Ходит в новые эндпоинты api/pub/polls/tierlist_start|match|result.php
+ *        (их не было в публичном API вообще). Стандартная проверка /voted
+ *        пропускается для типа tierlist — у него своя логика возобновления/
+ *        завершения турнира через tl_status.
  * v1.5 — приведено в соответствие с тем, что делает основной сайт (poll.html),
  *        используя новые поля api/pub/polls/get.php:
  *        - is_18plus: гейт с датой рождения перед показом опроса (как на сайте)
@@ -116,14 +122,19 @@
     .qw-info-video { width: 100%; border-radius: 10px; display: block; aspect-ratio: 16/9; border: none; }
     .qw-info-note  { font-size: 12px; color: #9ca3af; margin-top: 10px; text-align: center; }
     .qw-unsupported { font-size: 13px; color: #9ca3af; border: 1px dashed #e5e7eb; border-radius: 8px; padding: 14px; text-align: center; }
-    .qw-tierlist { display: flex; flex-direction: column; gap: 8px; }
-    .qw-tier-row { display: flex; align-items: center; gap: 10px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 9px 12px; background: #fff; }
-    .qw-tier-rank { font-size: 13px; font-weight: 700; color: #6366f1; width: 20px; flex-shrink: 0; }
-    .qw-tier-text { font-size: 14px; color: #374151; flex: 1; }
-    .qw-tier-move { display: flex; gap: 4px; flex-shrink: 0; }
-    .qw-tier-move button { width: 26px; height: 26px; border: 1px solid #e5e7eb; background: #f9fafb; border-radius: 6px; cursor: pointer; font-size: 12px; color: #374151; line-height: 1; }
-    .qw-tier-move button:hover { background: #ede9fe; border-color: #6366f1; }
-    .qw-tier-move button:disabled { opacity: .35; cursor: not-allowed; }
+    .qw-tl-topbar { display: flex; justify-content: space-between; font-size: 12px; color: #6b7280; margin-bottom: 8px; }
+    .qw-tl-duel { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+    .qw-tl-card { flex: 1; cursor: pointer; border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; transition: border-color .15s, transform .15s; background: #fff; }
+    .qw-tl-card:hover { border-color: #6366f1; transform: translateY(-2px); }
+    .qw-tl-img-wrap { width: 100%; aspect-ratio: 3/4; overflow: hidden; background: #f3f4f6; }
+    .qw-tl-img-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .qw-tl-caption { padding: 8px 10px; font-size: 13px; color: #374151; text-align: center; }
+    .qw-tl-vs { font-size: 13px; font-weight: 700; color: #9ca3af; flex-shrink: 0; }
+    .qw-tl-result-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #f3f4f6; }
+    .qw-tl-result-row:last-child { border-bottom: none; }
+    .qw-tl-rank { font-size: 13px; font-weight: 700; color: #6366f1; width: 30px; flex-shrink: 0; text-align: center; }
+    .qw-tl-result-img { width: 36px; height: 48px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+    .qw-tl-result-title { font-size: 13px; color: #374151; }
     .qw-cover { width: 100%; max-height: 200px; object-fit: cover; display: block; }
     .qw-age-gate { padding: 32px 24px; text-align: center; }
     .qw-age-gate .qw-age-emoji { font-size: 32px; display: block; margin-bottom: 10px; }
@@ -362,25 +373,32 @@
 
         this.poll = rawData;
 
-        // Проверяем — голосовал ли уже этот пользователь
-        const identity = await getIdentity();
-        const params = new URLSearchParams({
-          fp_id:      identity.fpId      || '',
-          ls_key:     identity.lsKey     || '',
-          cookie_key: identity.cookieKey || '',
-          simple_fp:  identity.simpleFp  || '',
-        });
-        try {
-          const checkRes = await fetch(
-            API_BASE + '/polls/' + this.pollId + '/voted?' +
-            params.toString() + '&api_key=' + encodeURIComponent(this.apiKey)
-          );
-          const checkData = await checkRes.json();
-          if (checkData.voted) {
-            this.renderThanks(true);
-            return;
-          }
-        } catch(_) {}
+        // Проверяем — голосовал ли уже этот пользователь. Пропускаем для
+        // Tier List: там всего один "вопрос"-контейнер карточек, и answers
+        // заполняется уже на первой дуэли — стандартная проверка (сколько
+        // question_id отвечено) решила бы, что опрос пройден полностью,
+        // хотя турнир только начался. У Tier List своя логика возобновления/
+        // завершения через tl_status внутри POST /tierlist/start.
+        if (this.poll.type !== 'tierlist') {
+          const identity = await getIdentity();
+          const params = new URLSearchParams({
+            fp_id:      identity.fpId      || '',
+            ls_key:     identity.lsKey     || '',
+            cookie_key: identity.cookieKey || '',
+            simple_fp:  identity.simpleFp  || '',
+          });
+          try {
+            const checkRes = await fetch(
+              API_BASE + '/polls/' + this.pollId + '/voted?' +
+              params.toString() + '&api_key=' + encodeURIComponent(this.apiKey)
+            );
+            const checkData = await checkRes.json();
+            if (checkData.voted) {
+              this.renderThanks(true);
+              return;
+            }
+          } catch(_) {}
+        }
 
         // Гейт 18+ — раньше отсутствовал полностью (поле is_18plus не
         // приходило от сервера), теперь ведём себя как поль.html: спрашиваем
@@ -457,7 +475,9 @@
     // как раньше. Раньше этой развилки не было вообще — виджет всегда шёл
     // пошагово, даже для survey, где на сайте ожидается список.
     _startRender() {
-      if (this.poll.type === 'survey') {
+      if (this.poll.type === 'tierlist') {
+        this.tlStart();
+      } else if (this.poll.type === 'survey') {
         this.renderSurveyAll();
       } else {
         this.renderStep();
@@ -565,6 +585,138 @@
         return;
       }
       this.submit();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Tier List — настоящий турнир на выбывание с картинками, как на сайте
+    // (tlRender/tlPick/tlRenderResult в poll.html). Раньше для type=tierlist
+    // виджет использовал упрощённый текстовый реордеринг без картинок —
+    // теперь ходит в специальные /tierlist/start|match|result эндпоинты
+    // публичного API (их тоже не было — добавлены вместе с этим фиксом).
+    // ═══════════════════════════════════════════════════════════════════
+
+    // Общий helper для вызова /tierlist/* — учитывает прокси-режим (backendUrl)
+    // так же, как submit() для обычного /vote.
+    async _tlCall(subpath, method, body) {
+      if (this.backendUrl) {
+        const proxyUrl = this.backendUrl + '?path=/polls/' + this.pollId + subpath;
+        const res = await fetch(proxyUrl, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Ошибка Tier List');
+        return data;
+      }
+      return apiFetch('/polls/' + this.pollId + subpath, this.apiKey, {
+        method,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    }
+
+    async tlStart() {
+      this.render(h('div', { className: 'qw-loader' }, '⏳ Готовим карточки...'));
+      try {
+        const identity = await getIdentity();
+        const data = await this._tlCall('/tierlist/start', 'POST', {
+          voter_id:   identity.voterId,
+          fp_id:      identity.fpId,
+          ls_key:     identity.lsKey,
+          cookie_key: identity.cookieKey,
+          simple_fp:  identity.simpleFp,
+        });
+        this.tlAttemptId = data.attempt_id;
+        this._tlRender(data);
+      } catch (e) {
+        this.render(this._error(e.message));
+      }
+    }
+
+    _tlRender(data) {
+      if (data.status === 'finished') { this._tlRenderResult(data, !!data.already_participated); return; }
+
+      const poll = this.poll;
+      const pct  = Math.min(100, Math.round((data.round - 1) / Math.max(1, data.total_rounds) * 100));
+      const [a, b] = data.pair;
+
+      const header = h('div', {},
+        poll.cover_url ? h('img', { className: 'qw-cover', src: poll.cover_url, alt: '' }) : null,
+        h('div', { className: 'qw-header' }, h('h2', {}, poll.title))
+      );
+
+      const body = h('div', { className: 'qw-body' },
+        h('div', { className: 'qw-tl-topbar' },
+          h('span', {}, '🏆 Раунд ' + data.round + ' из ~' + data.total_rounds),
+          h('span', {}, data.remaining_count + ' в игре')
+        ),
+        h('div', { className: 'qw-progress-bar' },
+          h('div', { className: 'qw-progress-fill', style: 'width:' + pct + '%' })
+        ),
+        h('div', { className: 'qw-tl-duel' },
+          h('div', { className: 'qw-tl-card', onClick: () => this._tlPick(a.id) },
+            h('div', { className: 'qw-tl-img-wrap' }, h('img', { src: a.image_url, alt: a.title || '' })),
+            a.title ? h('div', { className: 'qw-tl-caption' }, a.title) : null
+          ),
+          h('div', { className: 'qw-tl-vs' }, 'VS'),
+          h('div', { className: 'qw-tl-card', onClick: () => this._tlPick(b.id) },
+            h('div', { className: 'qw-tl-img-wrap' }, h('img', { src: b.image_url, alt: b.title || '' })),
+            b.title ? h('div', { className: 'qw-tl-caption' }, b.title) : null
+          )
+        )
+      );
+
+      this.render(h('div', {}, header, body));
+    }
+
+    async _tlPick(winnerId) {
+      if (this._tlChoosing) return;
+      this._tlChoosing = true;
+      try {
+        const data = await this._tlCall('/tierlist/match', 'POST', {
+          attempt_id: this.tlAttemptId,
+          winner_id:  winnerId,
+        });
+        this._tlChoosing = false;
+        this._tlRender(data);
+      } catch (e) {
+        this._tlChoosing = false;
+        alert('Ошибка сохранения ответа: ' + e.message);
+      }
+    }
+
+    async _tlRenderResult(data, alreadyParticipated) {
+      const poll = this.poll;
+      let res;
+      try {
+        res = await this._tlCall('/tierlist/result?attempt_id=' + this.tlAttemptId, 'GET');
+      } catch (e) {
+        this.render(this._error('Не удалось загрузить результат'));
+        return;
+      }
+
+      const results = (res.personal && res.personal.results) || [];
+
+      const header = h('div', {},
+        poll.cover_url ? h('img', { className: 'qw-cover', src: poll.cover_url, alt: '' }) : null,
+        h('div', { className: 'qw-header' }, h('h2', {}, poll.title))
+      );
+
+      const rows = results.map(r => h('div', { className: 'qw-tl-result-row' },
+        h('span', { className: 'qw-tl-rank' }, '#' + r.place),
+        r.image_url ? h('img', { className: 'qw-tl-result-img', src: r.image_url, alt: '' }) : null,
+        h('span', { className: 'qw-tl-result-title' }, r.title || '')
+      ));
+
+      const body = h('div', { className: 'qw-body' },
+        h('div', { className: 'qw-thanks' },
+          h('h3', {}, alreadyParticipated ? '👋 Вы уже участвовали!' : '🎉 Турнир завершён!'),
+          h('p', {}, 'Личный рейтинг участника, от лучшего к худшему')
+        ),
+        ...rows
+      );
+
+      this.render(h('div', {}, header, body));
     }
 
     _renderInput(q) {
@@ -737,53 +889,12 @@
         return h('div', { className: 'qw-info-note' }, 'Видео не задано');
       }
 
-      // tierlist — ранжирование вариантов. Полноценный drag-n-drop не везде
-      // доступен (мобильные тач-события, встраивание в сторонние сайты),
-      // поэтому используем кнопки ↑/↓ — они работают везде одинаково.
-      // Порядок сохраняем как text_value = "id1,id2,id3..." (по порядку
-      // от 1-го места к последнему); backend хранит tierlist как обычный
-      // text_value (см. vote.php — всё что не radio/checkbox/dropdown идёt
-      // в text_value).
-      if (q.type === 'tierlist') {
-        let order = saved.text_value
-          ? saved.text_value.split(',').map(s => parseInt(s, 10)).filter(Boolean)
-          : q.options.map(o => o.id);
-        // на случай рассинхрона (options изменились) — гарантируем что все id на месте
-        q.options.forEach(o => { if (!order.includes(o.id)) order.push(o.id); });
-        order = order.filter(id => q.options.some(o => o.id === id));
-
-        this.answers[q.id] = { text_value: order.join(',') };
-
-        const wrap = h('div', { className: 'qw-tierlist' });
-        const optById = Object.fromEntries(q.options.map(o => [o.id, o.text]));
-
-        const redraw = () => {
-          wrap.innerHTML = '';
-          order.forEach((id, idx) => {
-            const row = h('div', { className: 'qw-tier-row' },
-              h('span', { className: 'qw-tier-rank' }, '#' + (idx + 1)),
-              h('span', { className: 'qw-tier-text' }, optById[id] || ''),
-              h('div', { className: 'qw-tier-move' },
-                h('button', {
-                  type: 'button', disabled: idx === 0 ? 'true' : null,
-                  onClick: () => { [order[idx - 1], order[idx]] = [order[idx], order[idx - 1]]; save(); }
-                }, '↑'),
-                h('button', {
-                  type: 'button', disabled: idx === order.length - 1 ? 'true' : null,
-                  onClick: () => { [order[idx + 1], order[idx]] = [order[idx], order[idx + 1]]; save(); }
-                }, '↓')
-              )
-            );
-            wrap.appendChild(row);
-          });
-        };
-        const save = () => {
-          this.answers[q.id] = { text_value: order.join(',') };
-          redraw();
-        };
-        redraw();
-        return wrap;
-      }
+      // tierlist больше не обрабатывается здесь — для type='tierlist' весь
+      // опрос целиком идёт через отдельный дуэльный флоу (tlStart() →
+      // _tlRender() → _tlRenderResult()), минуя renderStep()/renderSurveyAll()
+      // и, соответственно, _renderInput() — см. _startRender(). Раньше тут
+      // был текстовый реордеринг-фолбэк без картинок; теперь настоящие
+      // дуэли с картинками через /tierlist/start|match|result.
 
       // Неподдерживаемые пока типы (сейчас — file). Не блокируем прохождение
       // опроса: помечаем вопрос как формально отвеченный пустым значением,
