@@ -598,8 +598,18 @@
     // Общий helper для вызова /tierlist/* — учитывает прокси-режим (backendUrl)
     // так же, как submit() для обычного /vote.
     async _tlCall(subpath, method, body) {
+      const fullPath = '/polls/' + this.pollId + subpath;
       if (this.backendUrl) {
-        const proxyUrl = this.backendUrl + '?path=/polls/' + this.pollId + subpath;
+        // fullPath может содержать свой собственный "?" (например
+        // .../tierlist/result?attempt_id=73) — раньше он клеился в
+        // ?path=... без экранирования, из-за чего получалось два "?" в
+        // одном URL: .../result?attempt_id=73?api_key=...
+        // PHP в этом случае парсит второй "?api_key=..." как ЧАСТЬ
+        // значения attempt_id, а не отдельный параметр — сервер получал
+        // пустой api_key и отвечал 401 "API-ключ не передан". Экранируем
+        // весь путь целиком через encodeURIComponent — PHP сам корректно
+        // раскодирует $_GET['path'] обратно в исходную строку с "?" внутри.
+        const proxyUrl = this.backendUrl + '?path=' + encodeURIComponent(fullPath);
         const res = await fetch(proxyUrl, {
           method,
           headers: { 'Content-Type': 'application/json' },
@@ -609,7 +619,7 @@
         if (!res.ok) throw new Error(data.error || 'Ошибка Tier List');
         return data;
       }
-      return apiFetch('/polls/' + this.pollId + subpath, this.apiKey, {
+      return apiFetch(fullPath, this.apiKey, {
         method,
         body: body ? JSON.stringify(body) : undefined,
       });
