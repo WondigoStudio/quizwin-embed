@@ -1,15 +1,36 @@
 /**
- * QuizWin Embed Widget v1.3 (checkbox для всех 3 провайдеров)
+ * QuizWin Embed Widget v1.4 (полная поддержка всех типов вопросов)
  * Требует: <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
  * CDN: https://cdn.jsdelivr.net/gh/WondigoStudio/quizwin-embed@latest/embed.js
  * Использование:
  *   <div data-qw-poll="123456" data-qw-key="qwk_ваш_ключ"></div>
  *   <script src="https://quizwin.free.nf/embed.js" defer></script>
+ *
+ * ── История изменений ────────────────────────────────────────────────────
+ * v1.4 — добавлена отрисовка типов вопросов, которых не было в v1.3:
+ *        text_line, dropdown, date, time, info_title, info_image,
+ *        info_video, tierlist. Раньше при встрече с ними виджет показывал
+ *        "(неизвестный тип вопроса)" и блокировал прохождение опроса,
+ *        если вопрос был обязательным — пройти дальше было невозможно.
+ *        Также убран мёртвый код для типа 'file' (this._pendingFiles нигде
+ *        не заполнялся) — теперь file-вопросы явно помечены как
+ *        неподдерживаемые и не блокируют прохождение опроса.
  */
 (function () {
   'use strict';
 
   const API_BASE = 'https://muddy-cell-5e80.windigo505official.workers.dev';
+
+  // Типы вопросов, которые не требуют ответа от пользователя — это просто
+  // информационные слайды. Даже если backend вернёт required=true (что не
+  // должно случаться, но на всякий случай не доверяем чужому вводу), они
+  // никогда не блокируют переход "Далее".
+  const INFO_TYPES = ['info_title', 'info_image', 'info_video'];
+
+  // Типы, для которых у виджета пока нет полноценной реализации ввода.
+  // Показываем предупреждение и не блокируем прохождение опроса, даже если
+  // вопрос помечен как обязательный на стороне создателя опроса.
+  const UNSUPPORTED_TYPES = ['file'];
 
   const CSS = `
     .qw-widget * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -38,6 +59,10 @@
     .qw-option-text    { font-size: 14px; color: #374151; }
     .qw-textarea { width: 100%; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; font-size: 14px; resize: vertical; min-height: 80px; outline: none; font-family: inherit; color: #111827; transition: border-color .15s; }
     .qw-textarea:focus { border-color: #6366f1; }
+    .qw-input { width: 100%; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; font-size: 14px; outline: none; font-family: inherit; color: #111827; transition: border-color .15s; background: #fff; }
+    .qw-input:focus { border-color: #6366f1; }
+    .qw-select { width: 100%; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; font-size: 14px; outline: none; font-family: inherit; color: #111827; background: #fff; cursor: pointer; transition: border-color .15s; }
+    .qw-select:focus { border-color: #6366f1; }
     .qw-scale { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
     .qw-scale-btn { width: 40px; height: 40px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; cursor: pointer; font-size: 14px; font-weight: 500; color: #374151; transition: all .15s; }
     .qw-scale-btn:hover, .qw-scale-btn.selected { background: #6366f1; border-color: #6366f1; color: #fff; }
@@ -67,6 +92,18 @@
     .qw-captcha-label { font-size: 12px; color: #9ca3af; }
     .qw-captcha-error { font-size: 12px; color: #ef4444; margin-top: 4px; display: none; }
     .qw-captcha-error.visible { display: block; }
+    .qw-info-image { width: 100%; border-radius: 10px; display: block; max-height: 320px; object-fit: cover; }
+    .qw-info-video { width: 100%; border-radius: 10px; display: block; aspect-ratio: 16/9; border: none; }
+    .qw-info-note  { font-size: 12px; color: #9ca3af; margin-top: 10px; text-align: center; }
+    .qw-unsupported { font-size: 13px; color: #9ca3af; border: 1px dashed #e5e7eb; border-radius: 8px; padding: 14px; text-align: center; }
+    .qw-tierlist { display: flex; flex-direction: column; gap: 8px; }
+    .qw-tier-row { display: flex; align-items: center; gap: 10px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 9px 12px; background: #fff; }
+    .qw-tier-rank { font-size: 13px; font-weight: 700; color: #6366f1; width: 20px; flex-shrink: 0; }
+    .qw-tier-text { font-size: 14px; color: #374151; flex: 1; }
+    .qw-tier-move { display: flex; gap: 4px; flex-shrink: 0; }
+    .qw-tier-move button { width: 26px; height: 26px; border: 1px solid #e5e7eb; background: #f9fafb; border-radius: 6px; cursor: pointer; font-size: 12px; color: #374151; line-height: 1; }
+    .qw-tier-move button:hover { background: #ede9fe; border-color: #6366f1; }
+    .qw-tier-move button:disabled { opacity: .35; cursor: not-allowed; }
   `;
 
   if (!document.getElementById('qw-styles')) {
@@ -76,6 +113,8 @@
     document.head.appendChild(style);
   }
 
+  // ── Идентификация — те же ключи что в poll.html ────────────────────────────
+  // localStorage: qw_anon_key, cookie: qw_anon — синхронизированы с основным сайтом
   function _getSimpleFingerprint() {
     const d = [
       navigator.userAgent, navigator.language,
@@ -99,6 +138,7 @@
     document.cookie = name + '=' + val + '; expires=' + exp + '; path=/; SameSite=Lax';
   }
 
+  // Ждём пока FingerprintJS появится в window (может грузиться параллельно с embed.js)
   function waitForFP(timeout) {
     timeout = timeout || 3000;
     return new Promise(function(resolve) {
@@ -124,6 +164,7 @@
       ctx.fillStyle = 'rgba(102,204,0,0.7)';
       ctx.fillText('QuizWin fp', 4, 17);
       const data = canvas.toDataURL();
+      // Хешируем строку в число
       let h = 0;
       for (let i = 0; i < data.length; i++) { h = ((h << 5) - h) + data.charCodeAt(i); h |= 0; }
       return 'cfp_' + Math.abs(h).toString(36);
@@ -133,22 +174,27 @@
   }
 
   async function getIdentity() {
+    // fp_id — canvas fingerprint (стабильный, без внешних зависимостей)
+    // Пробуем FingerprintJS если доступен, иначе canvas
     let fpId = '';
     try {
-      await waitForFP(1500);
+      await waitForFP(1500); // ждём не более 1.5с
       if (typeof FingerprintJS !== 'undefined') {
         const fp = await FingerprintJS.load();
         fpId = (await fp.get()).visitorId;
       }
     } catch(e) {}
+    // Fallback на canvas если FingerprintJS не дал результат
     if (!fpId) fpId = _getCanvasFingerprint();
 
+    // ls_key — тот же ключ qw_anon_key что в poll.html
     let lsKey = localStorage.getItem('qw_anon_key');
     if (!lsKey) {
       lsKey = 'ls_' + Date.now() + '_' + Math.random().toString(36).slice(2);
       localStorage.setItem('qw_anon_key', lsKey);
     }
 
+    // cookie_key — тот же cookie qw_anon что в poll.html
     let cookieKey = _getCookie('qw_anon');
     if (!cookieKey) {
       cookieKey = 'ck_' + Date.now() + '_' + Math.random().toString(36).slice(2);
@@ -158,7 +204,7 @@
     const simpleFp = _getSimpleFingerprint();
 
     return {
-      voterId:   lsKey,
+      voterId:   lsKey,       // voter_id = ls_key для совместимости
       fpId:      fpId,
       lsKey:     lsKey,
       cookieKey: cookieKey,
@@ -166,6 +212,7 @@
     };
   }
 
+  // ── API ────────────────────────────────────────────────────────────────────
   async function apiFetch(path, apiKey, options) {
     options = options || {};
     const sep = path.includes('?') ? '&' : '?';
@@ -178,6 +225,7 @@
     return json;
   }
 
+  // ── DOM helper ─────────────────────────────────────────────────────────────
   function h(tag, attrs) {
     attrs = attrs || {};
     const children = Array.prototype.slice.call(arguments, 2);
@@ -198,17 +246,30 @@
     return el;
   }
 
+  // Извлекаем YouTube/Vimeo id для встраивания через iframe. Если ссылка
+  // не распознана — просто отдаём её как есть (сработает для прямых mp4 и т.п.
+  // через <video>, тоже поддержано ниже).
+  function _toEmbedVideoUrl(url) {
+    if (!url) return null;
+    const yt = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([\w-]{6,})/);
+    if (yt) return 'https://www.youtube.com/embed/' + yt[1];
+    const vimeo = url.match(/vimeo\.com\/(\d+)/);
+    if (vimeo) return 'https://player.vimeo.com/video/' + vimeo[1];
+    return null;
+  }
+
+  // ── Widget ─────────────────────────────────────────────────────────────────
   class QwWidget {
     constructor(container, pollId, apiKey, backendUrl) {
       this.container  = container;
       this.pollId     = pollId;
       this.apiKey     = apiKey;
-      this.backendUrl = backendUrl || null;
+      this.backendUrl = backendUrl || null; // URL прокси на сервере пользователя
       this.poll       = null;
       this.step       = 0;
       this.answers    = {};
       this.submitted  = false;
-      this._captchaToken = null;
+      this._captchaToken = null;  // токен капчи, заполняется после прохождения
       this.render(this._loader());
       this.load();
     }
@@ -228,6 +289,9 @@
 
     async load() {
       try {
+        // apiFetch бросит ошибку при не-200. При geo_blocked (403) и
+        // captcha_required нам нужно поймать специфичный код — делаем
+        // сырой fetch чтобы читать тело при любом статусе.
         const rawRes = await fetch(
           API_BASE + '/polls/' + this.pollId + '?api_key=' + encodeURIComponent(this.apiKey)
         );
@@ -245,6 +309,7 @@
 
         this.poll = rawData;
 
+        // Проверяем — голосовал ли уже этот пользователь
         const identity = await getIdentity();
         const params = new URLSearchParams({
           fp_id:      identity.fpId      || '',
@@ -288,8 +353,9 @@
           h('div', { className: 'qw-progress-fill', style: 'width:' + pct + '%' })
         ),
         h('div', { className: 'qw-step-label' }, 'Вопрос ' + (this.step + 1) + ' из ' + total),
-        h('div', { className: 'qw-question' }, q.text),
+        !INFO_TYPES.includes(q.type) ? h('div', { className: 'qw-question' }, q.text) : null,
         this._renderInput(q),
+        // Капча показывается только на последнем шаге если включена в опросе
         isLastStep && poll.captcha ? this._renderCaptcha(poll.captcha) : null,
         h('div', { className: 'qw-actions' },
           ...[
@@ -351,11 +417,52 @@
         return wrap;
       }
 
+      // dropdown — как radio, но одиночный выбор через <select>. Backend
+      // (vote.php) хранит его так же как radio — через option_ids: [id].
+      if (q.type === 'dropdown') {
+        const sel = h('select', { className: 'qw-select',
+          onChange: (e) => {
+            const val = parseInt(e.target.value, 10);
+            this.answers[q.id] = val ? { option_ids: [val] } : { option_ids: [] };
+          }
+        },
+          h('option', { value: '' }, '— Выберите вариант —'),
+          ...q.options.map(opt => {
+            const optEl = h('option', { value: opt.id }, opt.text);
+            if ((saved.option_ids || []).includes(opt.id)) optEl.setAttribute('selected', '');
+            return optEl;
+          })
+        );
+        return sel;
+      }
+
       if (q.type === 'text') {
         const ta = h('textarea', { className: 'qw-textarea', placeholder: 'Ваш ответ...' });
         ta.value = saved.text_value || '';
         ta.addEventListener('input', () => { this.answers[q.id] = { text_value: ta.value }; });
         return ta;
+      }
+
+      // text_line — короткий однострочный ответ (email, имя, число и т.п.)
+      if (q.type === 'text_line') {
+        const inp = h('input', { type: 'text', className: 'qw-input', placeholder: 'Ваш ответ...' });
+        inp.value = saved.text_value || '';
+        inp.addEventListener('input', () => { this.answers[q.id] = { text_value: inp.value }; });
+        return inp;
+      }
+
+      if (q.type === 'date') {
+        const inp = h('input', { type: 'date', className: 'qw-input' });
+        inp.value = saved.text_value || '';
+        inp.addEventListener('input', () => { this.answers[q.id] = { text_value: inp.value }; });
+        return inp;
+      }
+
+      if (q.type === 'time') {
+        const inp = h('input', { type: 'time', className: 'qw-input' });
+        inp.value = saved.text_value || '';
+        inp.addEventListener('input', () => { this.answers[q.id] = { text_value: inp.value }; });
+        return inp;
       }
 
       if (q.type === 'yn') {
@@ -403,9 +510,104 @@
         return wrap;
       }
 
-      return h('div', {}, '(неизвестный тип вопроса)');
+      // ── Информационные слайды — ответа не требуют, только "Далее" ────────
+      if (q.type === 'info_title') {
+        // Заголовок уже выводится через .qw-question в renderStep(),
+        // здесь можно добавить только доп. подпись, если она есть.
+        this.answers[q.id] = { text_value: 'ack' }; // помечаем как "просмотрено"
+        return q.image_url
+          ? h('div', {}, h('img', { className: 'qw-info-image', src: q.image_url, alt: '' }))
+          : h('div', {});
+      }
+
+      if (q.type === 'info_image') {
+        this.answers[q.id] = { text_value: 'ack' };
+        return q.image_url
+          ? h('img', { className: 'qw-info-image', src: q.image_url, alt: q.text || '' })
+          : h('div', { className: 'qw-info-note' }, 'Изображение не задано');
+      }
+
+      if (q.type === 'info_video') {
+        this.answers[q.id] = { text_value: 'ack' };
+        const embedUrl = _toEmbedVideoUrl(q.image_url);
+        if (embedUrl) {
+          return h('iframe', {
+            className: 'qw-info-video', src: embedUrl,
+            allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture',
+            allowfullscreen: 'true',
+          });
+        }
+        if (q.image_url) {
+          return h('video', { className: 'qw-info-video', src: q.image_url, controls: 'true' });
+        }
+        return h('div', { className: 'qw-info-note' }, 'Видео не задано');
+      }
+
+      // tierlist — ранжирование вариантов. Полноценный drag-n-drop не везде
+      // доступен (мобильные тач-события, встраивание в сторонние сайты),
+      // поэтому используем кнопки ↑/↓ — они работают везде одинаково.
+      // Порядок сохраняем как text_value = "id1,id2,id3..." (по порядку
+      // от 1-го места к последнему); backend хранит tierlist как обычный
+      // text_value (см. vote.php — всё что не radio/checkbox/dropdown идёt
+      // в text_value).
+      if (q.type === 'tierlist') {
+        let order = saved.text_value
+          ? saved.text_value.split(',').map(s => parseInt(s, 10)).filter(Boolean)
+          : q.options.map(o => o.id);
+        // на случай рассинхрона (options изменились) — гарантируем что все id на месте
+        q.options.forEach(o => { if (!order.includes(o.id)) order.push(o.id); });
+        order = order.filter(id => q.options.some(o => o.id === id));
+
+        this.answers[q.id] = { text_value: order.join(',') };
+
+        const wrap = h('div', { className: 'qw-tierlist' });
+        const optById = Object.fromEntries(q.options.map(o => [o.id, o.text]));
+
+        const redraw = () => {
+          wrap.innerHTML = '';
+          order.forEach((id, idx) => {
+            const row = h('div', { className: 'qw-tier-row' },
+              h('span', { className: 'qw-tier-rank' }, '#' + (idx + 1)),
+              h('span', { className: 'qw-tier-text' }, optById[id] || ''),
+              h('div', { className: 'qw-tier-move' },
+                h('button', {
+                  type: 'button', disabled: idx === 0 ? 'true' : null,
+                  onClick: () => { [order[idx - 1], order[idx]] = [order[idx], order[idx - 1]]; save(); }
+                }, '↑'),
+                h('button', {
+                  type: 'button', disabled: idx === order.length - 1 ? 'true' : null,
+                  onClick: () => { [order[idx + 1], order[idx]] = [order[idx], order[idx + 1]]; save(); }
+                }, '↓')
+              )
+            );
+            wrap.appendChild(row);
+          });
+        };
+        const save = () => {
+          this.answers[q.id] = { text_value: order.join(',') };
+          redraw();
+        };
+        redraw();
+        return wrap;
+      }
+
+      // Неподдерживаемые пока типы (сейчас — file). Не блокируем прохождение
+      // опроса: помечаем вопрос как формально отвеченный пустым значением,
+      // чтобы required-проверка в next() его пропустила.
+      if (UNSUPPORTED_TYPES.includes(q.type)) {
+        return h('div', { className: 'qw-unsupported' },
+          '⚠️ Этот тип вопроса пока не поддерживается встраиваемым виджетом и будет пропущен.'
+        );
+      }
+
+      return h('div', { className: 'qw-unsupported' }, '⚠️ Неизвестный тип вопроса — будет пропущен.');
     }
 
+    // ── Капча ─────────────────────────────────────────────────────────────────
+    // captchaConfig = { type: 'hcaptcha'|'turnstile'|'recaptcha', site_key: '...' }
+    // Все три типа рендерятся как видимый чекбокс-виджет (нужен ключ
+    // reCAPTCHA именно типа "v2: Я не робот (Checkbox)" — v3/Invisible-ключи
+    // Google не даёт рендерить через grecaptcha.render()).
     _renderCaptcha(captchaConfig) {
       const self = this;
       const wrap = h('div', { className: 'qw-captcha-wrap' });
@@ -417,8 +619,10 @@
       wrap.appendChild(widgetEl);
       wrap.appendChild(errorEl);
 
+      // Сохраняем ссылку чтобы submit мог показать ошибку
       this._captchaErrorEl = errorEl;
 
+      // Загружаем скрипт капчи и инициализируем виджет после рендера
       setTimeout(() => self._initCaptchaWidget(captchaConfig, widgetEl), 0);
 
       return wrap;
@@ -443,11 +647,13 @@
       const scriptUrl = scriptUrls[type];
       if (!scriptUrl) return;
 
+      // Коллбэк при получении токена
       const callbackName = '_qwCaptchaCb_' + self.pollId;
       window[callbackName] = function(token) {
         self._captchaToken = token;
         if (self._captchaErrorEl) self._captchaErrorEl.classList.remove('visible');
       };
+      // Коллбэк при истечении токена
       const expiredName = '_qwCaptchaExp_' + self.pollId;
       window[expiredName] = function() { self._captchaToken = null; };
 
@@ -478,6 +684,9 @@
                   size: 'normal',
                 });
               } catch (renderErr) {
+                // Самая частая причина — ключ не типа "v2 Checkbox"
+                // (например v3/Invisible/Enterprise). Нужен другой ключ
+                // из консоли Google, кодом это не обойти.
                 console.error('QuizWin: reCAPTCHA render failed — проверьте, что site_key создан как "v2: Я не робот (Checkbox)"', renderErr);
                 container.innerHTML = '<span style="font-size:12px;color:#ef4444">⚠️ Неверный тип ключа reCAPTCHA — нужен v2 Checkbox</span>';
               }
@@ -488,6 +697,7 @@
         }
       };
 
+      // Если скрипт уже загружен — рендерим сразу
       const libReady = {
         hcaptcha:  () => !!window.hcaptcha,
         turnstile: () => !!window.turnstile,
@@ -498,6 +708,7 @@
         return;
       }
 
+      // Иначе — подгружаем скрипт
       if (!document.querySelector('script[src*="' + (type === 'recaptcha' ? 'recaptcha' : type) + '"]')) {
         const s = document.createElement('script');
         s.src = scriptUrl;
@@ -506,6 +717,7 @@
         s.onload = doRender;
         document.head.appendChild(s);
       } else {
+        // Скрипт уже есть но API ещё не готово — ждём
         const t = setInterval(() => {
           if (libReady[type] && libReady[type]()) { clearInterval(t); doRender(); }
         }, 100);
@@ -516,16 +728,21 @@
     next() {
       const q   = this.poll.questions[this.step];
       const ans = this.answers[q.id];
-      const hasPendingFile = q.type === 'file' && this._pendingFiles && this._pendingFiles[q.id];
-      const isEmpty = !hasPendingFile && (!ans || (
+
+      // Информационные слайды и неподдерживаемые типы никогда не блокируют
+      // переход дальше — на них физически нельзя дать ответ через виджет.
+      const skipValidation = INFO_TYPES.includes(q.type) || UNSUPPORTED_TYPES.includes(q.type);
+
+      const isEmpty = !skipValidation && (!ans || (
         (!ans.option_ids || ans.option_ids.length === 0) &&
-        (!ans.text_value || ans.text_value.trim() === '' || ans.text_value === 'pending')
+        (!ans.text_value || ans.text_value.trim() === '')
       ));
-      if (q.required && isEmpty) {
+      if (!skipValidation && q.required && isEmpty) {
         alert('Пожалуйста, ответьте на вопрос перед тем как продолжить.');
         return;
       }
       if (this.step === this.poll.questions.length - 1) {
+        // Последний шаг — проверяем капчу если включена
         if (this.poll.captcha && !this._captchaToken) {
           if (this._captchaErrorEl) this._captchaErrorEl.classList.add('visible');
           return;
@@ -549,13 +766,21 @@
         this._nextBtn.textContent = 'Отправка...';
       }
 
+      // getIdentity — async, ждём FingerprintJS
       const identity = await getIdentity();
-      const answers  = Object.entries(this.answers).map(([qid, ans]) =>
-        Object.assign({ question_id: parseInt(qid) }, ans)
-      );
+
+      // Информационные и неподдерживаемые слайды не шлём как ответы —
+      // backend всё равно ждёт вопрос в answers только если есть что сохранить.
+      const answers = Object.entries(this.answers)
+        .filter(([qid]) => {
+          const q = this.poll.questions.find(qq => String(qq.id) === String(qid));
+          return q && !INFO_TYPES.includes(q.type) && !UNSUPPORTED_TYPES.includes(q.type);
+        })
+        .map(([qid, ans]) => Object.assign({ question_id: parseInt(qid) }, ans));
 
       try {
         if (this.backendUrl) {
+          // Голосуем через прокси пользователя (секретный ключ на его сервере)
           const proxyUrl = this.backendUrl + '?path=/polls/' + this.pollId + '/vote';
           const proxyRes = await fetch(proxyUrl, {
             method: 'POST',
@@ -573,6 +798,7 @@
           const proxyData = await proxyRes.json();
           if (!proxyRes.ok) throw new Error(proxyData.error || 'Ошибка прокси');
         } else {
+          // Голосуем напрямую через Worker с публичным ключом
           await apiFetch('/polls/' + this.pollId + '/vote', this.apiKey, {
             method: 'POST',
             body: JSON.stringify({
@@ -593,8 +819,7 @@
           this._nextBtn.disabled = false;
           this._nextBtn.textContent = '✓ Отправить';
         }
-        // Единое сообщение — синхронизировано с vote.php (п.55 отчёта)
-        if (e.message.includes('уже участвовал')) {
+        if (e.message.includes('уже проголосовал')) {
           this.renderThanks(true);
         } else {
           alert('Ошибка отправки: ' + e.message);
@@ -654,6 +879,7 @@
     }
   }
 
+  // ── Auto-init ──────────────────────────────────────────────────────────────
   function init() {
     document.querySelectorAll('[data-qw-poll]').forEach(el => {
       if (el.dataset.qwInit) return;
