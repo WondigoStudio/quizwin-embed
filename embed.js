@@ -1,5 +1,6 @@
 /**
- * QuizWin Embed Widget v1.4 (полная поддержка всех типов вопросов)
+ * QuizWin Embed Widget v1.5 (паритет с сайтом: 18+, survey-список,
+ * настройки презентации, тема/обложка, разбор квиза, "пройти ещё раз")
  * Требует: <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
  * CDN: https://cdn.jsdelivr.net/gh/WondigoStudio/quizwin-embed@latest/embed.js
  * Использование:
@@ -7,6 +8,25 @@
  *   <script src="https://quizwin.free.nf/embed.js" defer></script>
  *
  * ── История изменений ────────────────────────────────────────────────────
+ * v1.5 — приведено в соответствие с тем, что делает основной сайт (poll.html),
+ *        используя новые поля api/pub/polls/get.php:
+ *        - is_18plus: гейт с датой рождения перед показом опроса (как на сайте)
+ *        - type === 'survey': все вопросы одним списком + одна кнопка отправки,
+ *          вместо пошагового режима (который остаётся для quiz/test/vote)
+ *        - pres_show_progress / pres_show_q_num / pres_allow_back: виджет
+ *          теперь реально их соблюдает, а не показывает всё безусловно
+ *        - theme_color / cover_url: применяются к виджету
+ *        - confirm_text: кастомный текст благодарности вместо жёстко
+ *          зашитого "Спасибо!"
+ *        - pres_show_refill / refill_btn_text: кнопка "пройти ещё раз"
+ *          (работает только если у опроса выключен one_per_user — backend
+ *          публичного API пока не поддерживает принудительный restart,
+ *          который есть на сайте через Premium)
+ *        - show_correct: после отправки квиза/теста показывается разбор
+ *          правильных/неправильных ответов, используя новое поле `results`
+ *          в ответе POST /vote (раньше сервер вообще не отдавал is_correct)
+ *        - require_auth: понятное сообщение вместо попытки анонимно
+ *          пройти опрос, который сервер теперь блокирует (403 auth_required)
  * v1.4 — добавлена отрисовка типов вопросов, которых не было в v1.3:
  *        text_line, dropdown, date, time, info_title, info_image,
  *        info_video, tierlist. Раньше при встрече с ними виджет показывал
@@ -104,6 +124,25 @@
     .qw-tier-move button { width: 26px; height: 26px; border: 1px solid #e5e7eb; background: #f9fafb; border-radius: 6px; cursor: pointer; font-size: 12px; color: #374151; line-height: 1; }
     .qw-tier-move button:hover { background: #ede9fe; border-color: #6366f1; }
     .qw-tier-move button:disabled { opacity: .35; cursor: not-allowed; }
+    .qw-cover { width: 100%; max-height: 200px; object-fit: cover; display: block; }
+    .qw-age-gate { padding: 32px 24px; text-align: center; }
+    .qw-age-gate .qw-age-emoji { font-size: 32px; display: block; margin-bottom: 10px; }
+    .qw-age-gate h3 { font-size: 16px; color: #111827; margin-bottom: 6px; }
+    .qw-age-gate p { font-size: 13px; color: #6b7280; margin-bottom: 16px; }
+    .qw-age-gate input { max-width: 220px; margin: 0 auto 12px; display: block; }
+    .qw-age-error { font-size: 12px; color: #ef4444; margin-top: 8px; display: none; }
+    .qw-age-error.visible { display: block; }
+    .qw-survey-block { margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid #f3f4f6; }
+    .qw-survey-block:last-of-type { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+    .qw-survey-num { font-size: 12px; color: #9ca3af; margin-bottom: 4px; }
+    .qw-refill-btn { margin-top: 14px; width: 100%; padding: 10px; border: 1px solid #e5e7eb; background: #fff; color: #6366f1; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .qw-refill-btn:hover { background: #f5f3ff; }
+    .qw-score-box { text-align: center; padding: 14px; background: #f5f3ff; border-radius: 10px; margin-bottom: 16px; }
+    .qw-score-box .qw-score-num { font-size: 22px; font-weight: 700; color: #6366f1; }
+    .qw-review-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; font-size: 13px; }
+    .qw-review-row .qw-review-ico { flex-shrink: 0; }
+    .qw-review-correct { color: #059669; }
+    .qw-review-wrong { color: #ef4444; text-decoration: line-through; }
   `;
 
   if (!document.getElementById('qw-styles')) {
@@ -281,6 +320,14 @@
           'Powered by ', h('a', { href: 'https://quizwin.free.nf', target: '_blank' }, 'QuizWin')
         )
       );
+      // theme_color — раньше игнорировался, виджет всегда был фиолетовым
+      // независимо от настройки на сайте.
+      if (this.poll && this.poll.theme_color) {
+        const header = wrap.querySelector('.qw-header');
+        if (header) header.style.background = this.poll.theme_color;
+        wrap.querySelectorAll('.qw-btn-primary').forEach(btn => { btn.style.background = this.poll.theme_color; });
+        wrap.querySelectorAll('.qw-progress-fill, .qw-result-fill').forEach(bar => { bar.style.background = this.poll.theme_color; });
+      }
       this.container.appendChild(wrap);
     }
 
@@ -301,6 +348,12 @@
           if (rawData.error === 'geo_blocked') {
             this.render(h('div', { className: 'qw-body' },
               h('div', { className: 'qw-error' }, '🌍 Опрос недоступен в вашем регионе')
+            ));
+            return;
+          }
+          if (rawData.error === 'auth_required') {
+            this.render(h('div', { className: 'qw-body' },
+              h('div', { className: 'qw-error' }, '🔒 ' + (rawData.message || 'Этот опрос доступен только авторизованным пользователям на quizwin.free.nf'))
             ));
             return;
           }
@@ -329,9 +382,85 @@
           }
         } catch(_) {}
 
-        this.renderStep();
+        // Гейт 18+ — раньше отсутствовал полностью (поле is_18plus не
+        // приходило от сервера), теперь ведём себя как поль.html: спрашиваем
+        // дату рождения перед показом контента, помним подтверждение в
+        // sessionStorage чтобы не спрашивать повторно на той же вкладке.
+        if (this.poll.is_18plus) {
+          const allowed = await this._show18PlusGate();
+          if (!allowed) return;
+        }
+
+        this._startRender();
       } catch (e) {
         this.render(this._error(e.message));
+      }
+    }
+
+    // ── Гейт 18+ ──────────────────────────────────────────────────────────
+    // Возвращает Promise<boolean> — true если можно показывать опрос.
+    // Логика зеркалит show18PlusGate() из poll.html: спрашиваем дату
+    // рождения, считаем возраст, при <18 блокируем полностью.
+    _show18PlusGate() {
+      return new Promise((resolve) => {
+        const sessionKey = 'qw_18plus_ok_' + this.pollId;
+        if (sessionStorage.getItem(sessionKey) === '1') { resolve(true); return; }
+
+        const errEl = h('div', { className: 'qw-age-error' }, 'Укажите дату рождения');
+        const input = h('input', { type: 'date', className: 'qw-input' });
+
+        const confirmAge = () => {
+          const val = input.value;
+          if (!val) { errEl.textContent = 'Укажите дату рождения'; errEl.classList.add('visible'); return; }
+          const dob = new Date(val + 'T00:00:00');
+          if (isNaN(dob.getTime()) || dob > new Date()) {
+            errEl.textContent = 'Некорректная дата'; errEl.classList.add('visible'); return;
+          }
+          const today = new Date();
+          let age = today.getFullYear() - dob.getFullYear();
+          const hadBirthday = (today.getMonth() > dob.getMonth()) ||
+            (today.getMonth() === dob.getMonth() && today.getDate() >= dob.getDate());
+          if (!hadBirthday) age--;
+
+          if (age < 18) {
+            this.render(h('div', { className: 'qw-body' },
+              h('div', { className: 'qw-age-gate' },
+                h('span', { className: 'qw-age-emoji' }, '🔞'),
+                h('h3', {}, 'Доступ закрыт'),
+                h('p', {}, 'Этот опрос содержит контент 18+ и недоступен пользователям младше 18 лет.')
+              )
+            ));
+            resolve(false);
+            return;
+          }
+
+          sessionStorage.setItem(sessionKey, '1');
+          resolve(true);
+        };
+
+        this.render(h('div', { className: 'qw-body' },
+          h('div', { className: 'qw-age-gate' },
+            h('span', { className: 'qw-age-emoji' }, '🔞'),
+            h('h3', {}, 'Этот опрос содержит контент 18+'),
+            h('p', {}, 'Укажите дату рождения, чтобы продолжить'),
+            input,
+            h('button', { className: 'qw-btn qw-btn-primary', style: 'width:100%', onClick: confirmAge }, 'Подтвердить →'),
+            errEl
+          )
+        ));
+      });
+    }
+
+    // ── Точка входа в рендер после всех проверок (гео/18+/voted) ───────────
+    // survey — все вопросы одним списком (как renderSurveyAll() на сайте),
+    // quiz/test/vote (и всё остальное на всякий случай) — по одному вопросу,
+    // как раньше. Раньше этой развилки не было вообще — виджет всегда шёл
+    // пошагово, даже для survey, где на сайте ожидается список.
+    _startRender() {
+      if (this.poll.type === 'survey') {
+        this.renderSurveyAll();
+      } else {
+        this.renderStep();
       }
     }
 
@@ -341,25 +470,35 @@
       const total = poll.questions.length;
       const pct   = Math.round((this.step / total) * 100);
 
-      const header = h('div', { className: 'qw-header' },
-        h('h2', {}, poll.title),
-        poll.description ? h('p', {}, poll.description) : null
+      const header = h('div', {},
+        poll.cover_url ? h('img', { className: 'qw-cover', src: poll.cover_url, alt: '' }) : null,
+        h('div', { className: 'qw-header' },
+          h('h2', {}, poll.title),
+          poll.description ? h('p', {}, poll.description) : null
+        )
       );
 
       const isLastStep = this.step === total - 1;
+      // pres_show_progress / pres_show_q_num — раньше показывались всегда,
+      // независимо от настройки в create_quiz.html. pres_allow_back — раньше
+      // кнопка "Назад" была всегда доступна с шага 1, даже если владелец
+      // опроса явно её выключил (например для честного прохождения теста).
+      const showProgress = poll.pres_show_progress !== false;
+      const showQNum     = poll.pres_show_q_num !== false;
+      const allowBack     = poll.pres_allow_back === true;
 
       const body = h('div', { className: 'qw-body' },
-        h('div', { className: 'qw-progress-bar' },
+        showProgress ? h('div', { className: 'qw-progress-bar' },
           h('div', { className: 'qw-progress-fill', style: 'width:' + pct + '%' })
-        ),
-        h('div', { className: 'qw-step-label' }, 'Вопрос ' + (this.step + 1) + ' из ' + total),
+        ) : null,
+        showQNum ? h('div', { className: 'qw-step-label' }, 'Вопрос ' + (this.step + 1) + ' из ' + total) : null,
         !INFO_TYPES.includes(q.type) ? h('div', { className: 'qw-question' }, q.text) : null,
         this._renderInput(q),
         // Капча показывается только на последнем шаге если включена в опросе
         isLastStep && poll.captcha ? this._renderCaptcha(poll.captcha) : null,
         h('div', { className: 'qw-actions' },
           ...[
-            this.step > 0
+            (this.step > 0 && allowBack)
               ? h('button', { className: 'qw-btn qw-btn-ghost', onClick: () => this.prev() }, '← Назад')
               : null,
             h('button', { className: 'qw-btn qw-btn-primary', onClick: () => this.next() },
@@ -371,6 +510,61 @@
 
       this.render(h('div', {}, header, body));
       this._nextBtn = this.container.querySelector('.qw-btn-primary');
+    }
+
+    // ── Survey-режим: все вопросы одним списком, одна кнопка отправки ──────
+    // Раньше этого режима не было вообще — survey-опросы через виджет
+    // всегда шли по шагам как quiz/test/vote, что не соответствует
+    // поведению самого сайта (renderSurveyAll() в poll.html).
+    renderSurveyAll() {
+      const poll = this.poll;
+
+      const header = h('div', {},
+        poll.cover_url ? h('img', { className: 'qw-cover', src: poll.cover_url, alt: '' }) : null,
+        h('div', { className: 'qw-header' },
+          h('h2', {}, poll.title),
+          poll.description ? h('p', {}, poll.description) : null
+        )
+      );
+
+      const blocks = poll.questions.map((q, i) => h('div', { className: 'qw-survey-block' },
+        !INFO_TYPES.includes(q.type) ? h('div', { className: 'qw-survey-num' }, (i + 1) + ' / ' + poll.questions.length) : null,
+        !INFO_TYPES.includes(q.type) ? h('div', { className: 'qw-question' }, q.text) : null,
+        this._renderInput(q)
+      ));
+
+      const body = h('div', { className: 'qw-body' },
+        ...blocks,
+        poll.captcha ? this._renderCaptcha(poll.captcha) : null,
+        h('div', { className: 'qw-actions' },
+          h('button', { className: 'qw-btn qw-btn-primary', onClick: () => this.submitSurvey() }, '✓ Отправить')
+        )
+      );
+
+      this.render(h('div', {}, header, body));
+      this._nextBtn = this.container.querySelector('.qw-btn-primary');
+    }
+
+    // Валидация + отправка для survey-режима — в отличие от next() в
+    // пошаговом режиме, здесь нужно проверить ВСЕ вопросы сразу, а не один.
+    submitSurvey() {
+      for (const q of this.poll.questions) {
+        if (INFO_TYPES.includes(q.type) || UNSUPPORTED_TYPES.includes(q.type)) continue;
+        const ans = this.answers[q.id];
+        const isEmpty = !ans || (
+          (!ans.option_ids || ans.option_ids.length === 0) &&
+          (!ans.text_value || ans.text_value.trim() === '')
+        );
+        if (q.required && isEmpty) {
+          alert('Пожалуйста, ответьте на все обязательные вопросы.');
+          return;
+        }
+      }
+      if (this.poll.captcha && !this._captchaToken) {
+        if (this._captchaErrorEl) this._captchaErrorEl.classList.add('visible');
+        return;
+      }
+      this.submit();
     }
 
     _renderInput(q) {
@@ -778,6 +972,7 @@
         })
         .map(([qid, ans]) => Object.assign({ question_id: parseInt(qid) }, ans));
 
+      let voteResponse = null;
       try {
         if (this.backendUrl) {
           // Голосуем через прокси пользователя (секретный ключ на его сервере)
@@ -797,9 +992,10 @@
           });
           const proxyData = await proxyRes.json();
           if (!proxyRes.ok) throw new Error(proxyData.error || 'Ошибка прокси');
+          voteResponse = proxyData;
         } else {
           // Голосуем напрямую через Worker с публичным ключом
-          await apiFetch('/polls/' + this.pollId + '/vote', this.apiKey, {
+          voteResponse = await apiFetch('/polls/' + this.pollId + '/vote', this.apiKey, {
             method: 'POST',
             body: JSON.stringify({
               voter_id:      identity.voterId,
@@ -812,7 +1008,7 @@
             }),
           });
         }
-        this.renderThanks();
+        this.renderThanks(false, voteResponse);
       } catch (e) {
         this.submitted = false;
         if (this._nextBtn) {
@@ -827,29 +1023,115 @@
       }
     }
 
-    async renderThanks(alreadyVoted) {
+    // Считает счёт квиза/теста, сравнивая ответы пользователя (this.answers)
+    // с is_correct из results (приходит от vote.php только ПОСЛЕ отправки —
+    // раньше этих данных не было в контракте вообще, см. api/pub/polls/vote.php).
+    _computeScore(results) {
+      const correctByOption = {};
+      results.forEach(o => { correctByOption[o.id] = !!(+o.is_correct); });
+
+      let correctCount = 0, gradableCount = 0;
+      const review = [];
+
+      this.poll.questions.forEach(q => {
+        if (q.type !== 'radio' && q.type !== 'checkbox') return; // оценка только для choice-вопросов
+        const ans = this.answers[q.id];
+        const chosenIds = (ans && ans.option_ids) || [];
+        const correctIds = q.options.filter(o => correctByOption[o.id]).map(o => o.id);
+        if (correctIds.length === 0) return; // вопрос без правильного варианта — не оценивается
+        gradableCount++;
+        const isRight = chosenIds.length === correctIds.length &&
+          chosenIds.every(id => correctIds.includes(id));
+        if (isRight) correctCount++;
+        review.push({
+          text: q.text,
+          isRight,
+          chosenText: q.options.filter(o => chosenIds.includes(o.id)).map(o => o.text).join(', ') || '—',
+          correctText: q.options.filter(o => correctIds.includes(o.id)).map(o => o.text).join(', '),
+        });
+      });
+
+      return { correctCount, gradableCount, review };
+    }
+
+    async renderThanks(alreadyVoted, voteResponse) {
       alreadyVoted = alreadyVoted || false;
       const poll   = this.poll;
-      const header = h('div', { className: 'qw-header' }, h('h2', {}, poll.title));
+      const header = h('div', {},
+        poll.cover_url ? h('img', { className: 'qw-cover', src: poll.cover_url, alt: '' }) : null,
+        h('div', { className: 'qw-header' }, h('h2', {}, poll.title))
+      );
+
+      // confirm_text — раньше игнорировался, виджет всегда писал жёстко
+      // зашитый текст независимо от того, что владелец опроса указал
+      // в настройках презентации на сайте.
+      const defaultText = alreadyVoted ? 'Результаты вашего голосования уже учтены.' : 'Ваш голос учтён.';
+      const thanksText  = (!alreadyVoted && poll.confirm_text) ? poll.confirm_text : defaultText;
+
+      // Разбор квиза/теста — только если сервер прислал results (см. submit())
+      // и владелец опроса разрешил показывать правильные ответы.
+      let scoreEl = null;
+      const isGradable = (poll.type === 'quiz' || poll.type === 'test') && poll.show_correct;
+      if (isGradable && voteResponse && Array.isArray(voteResponse.results)) {
+        const { correctCount, gradableCount, review } = this._computeScore(voteResponse.results);
+        if (gradableCount > 0) {
+          scoreEl = h('div', {},
+            h('div', { className: 'qw-score-box' },
+              h('div', { className: 'qw-score-num' }, correctCount + ' / ' + gradableCount),
+              h('div', { style: 'font-size:12px;color:#6b7280;margin-top:2px;' }, 'правильных ответов')
+            ),
+            poll.show_wrong ? h('div', {}, ...review.map(r => h('div', { className: 'qw-review-row' },
+              h('span', { className: 'qw-review-ico' }, r.isRight ? '✅' : '❌'),
+              h('span', {},
+                h('div', { className: r.isRight ? 'qw-review-correct' : 'qw-review-wrong' }, r.chosenText),
+                (!r.isRight && r.correctText) ? h('div', { style: 'font-size:12px;color:#6b7280;' }, 'Правильно: ' + r.correctText) : null
+              )
+            ))) : null
+          );
+        }
+      }
 
       let resultsEl = null;
-      if (poll.show_results) {
+      if (poll.show_results && !scoreEl) {
         try {
           const r = await apiFetch('/polls/' + this.pollId + '/results', this.apiKey);
           resultsEl = this._renderResults(r);
         } catch (_) {}
       }
 
+      // pres_show_refill — раньше такой кнопки не было в виджете вообще.
+      // Работает только если опрос не ограничен one_per_user — публичный
+      // API пока не поддерживает принудительный restart (это Premium-фича
+      // сайта с отдельной логикой в answer.php, которой нет в api/pub).
+      const refillBtn = (poll.pres_show_refill && !poll.one_per_user && !alreadyVoted)
+        ? h('button', { className: 'qw-refill-btn', onClick: () => this._restart() },
+            poll.refill_btn_text || 'Пройти ещё раз')
+        : null;
+
       const thanks = h('div', { className: 'qw-body' },
         h('div', { className: 'qw-thanks' },
           h('h3', {}, alreadyVoted ? '👋 Вы уже голосовали!' : '🎉 Спасибо!'),
-          h('p', {}, alreadyVoted ? 'Результаты вашего голосования уже учтены.' : 'Ваш голос учтён.')
+          h('p', {}, thanksText)
         ),
-        resultsEl || ''
+        scoreEl || resultsEl || '',
+        refillBtn
       );
 
       this.render(h('div', {}, header, thanks));
     }
+
+    // Сбрасывает локальное состояние и запускает опрос заново с начала.
+    // Не трогает серверную сторону — просто новый набор ответов уйдёт в
+    // /vote как обычно (сервер сам решает, создавать ли новую попытку,
+    // см. api/pub/polls/vote.php — работает только при one_per_user=0).
+    _restart() {
+      this.step = 0;
+      this.answers = {};
+      this.submitted = false;
+      this._captchaToken = null;
+      this._startRender();
+    }
+
 
     _renderResults(r) {
       const wrap = h('div', { className: 'qw-results', style: 'margin-top:16px' });
