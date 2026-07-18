@@ -1037,7 +1037,12 @@
 
       if (q.type === 'info_video') {
         this.answers[q.id] = { text_value: 'ack' };
-        const embedUrl = _toEmbedVideoUrl(q.image_url);
+        // video_url — раньше не приходил вообще (не было колонки в БД,
+        // теперь есть). image_url оставлен как fallback на случай уже
+        // существующих вопросов, у которых ссылку когда-то (по ошибке
+        // старой версии) сохранили в image_url.
+        const videoSrc = q.video_url || q.image_url;
+        const embedUrl = _toEmbedVideoUrl(videoSrc);
         if (embedUrl) {
           return h('div', {},
             h('iframe', {
@@ -1048,8 +1053,8 @@
             q.description ? h('div', { className: 'qw-info-note', style: 'text-align:left;color:#374151;font-size:14px;margin-top:8px;' }, q.description) : null
           );
         }
-        if (q.image_url) {
-          return h('video', { className: 'qw-info-video', src: q.image_url, controls: 'true' });
+        if (videoSrc) {
+          return h('video', { className: 'qw-info-video', src: videoSrc, controls: 'true' });
         }
         return h('div', { className: 'qw-info-note' }, 'Видео не задано');
       }
