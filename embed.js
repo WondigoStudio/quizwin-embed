@@ -1,5 +1,5 @@
 /**
- * QuizWin Embed Widget v1.6 (настоящий Tier List через публичный API)
+ * QuizWin Embed Widget v1.8 (+ серверный прогресс/resume для step-режима)
  * Требует: <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
  * CDN: https://cdn.jsdelivr.net/gh/WondigoStudio/quizwin-embed@latest/embed.js
  * Использование:
@@ -7,6 +7,24 @@
  *   <script src="https://quizwin.free.nf/embed.js" defer></script>
  *
  * ── История изменений ────────────────────────────────────────────────────
+ * v1.8 — Прогресс прохождения (quiz/test/vote) теперь сохраняется на
+ *        сервере по каждому вопросу (final:false в /vote, без капчи и
+ *        без завершающей логики), а не только в памяти браузера. При
+ *        повторном открытии страницы GET /polls/{id}/progress (раньше не
+ *        существовал) возвращает зафиксированный question_order (с учётом
+ *        shuffle_q для этой попытки) и номер следующего неотвеченного
+ *        вопроса — виджет резюмирует ровно с того места, где прервались,
+ *        вместо того чтобы начинать заново. survey и tierlist не затронуты
+ *        — у survey нет промежуточного состояния (шлётся одним пакетом в
+ *        конце, как и раньше), у tierlist своя логика через tl_status.
+ * v1.7 — timer_q/timer_total теперь реально работают (раньше не отдавались
+ *        публичным API вообще): по истечении timer_q — принудительный переход
+ *        дальше без ответа; по истечении timer_total — принудительная отправка
+ *        всего собранного. "Пройти ещё раз" (pres_show_refill) теперь работает
+ *        как Premium-restart на сайте — через restart:true в /vote, который
+ *        api/pub/polls/vote.php обходит one_per_user ТОЛЬКО если владелец
+ *        опроса явно разрешил pres_show_refill (раньше кнопка была доступна
+ *        лишь при one_per_user=0 — не работала именно там, где нужнее всего).
  * v1.6 — Tier List через виджет теперь настоящий турнир на выбывание с
  *        картинками (tlStart/_tlRender/_tlPick/_tlRenderResult), как на
  *        сайте (poll.html), а не текстовый реордеринг ↑/↓ без картинок.
@@ -150,6 +168,10 @@
     .qw-refill-btn:hover { background: #f5f3ff; }
     .qw-score-box { text-align: center; padding: 14px; background: #f5f3ff; border-radius: 10px; margin-bottom: 16px; }
     .qw-score-box .qw-score-num { font-size: 22px; font-weight: 700; color: #6366f1; }
+    .qw-timer-wrap { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #9ca3af; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 999px; padding: 3px 10px; margin-bottom: 10px; }
+    .qw-timer-wrap.qw-timer-warn { color: #d97706; border-color: #fde68a; background: #fffbeb; }
+    .qw-timer-wrap.qw-timer-danger { color: #ef4444; border-color: #fecaca; background: #fef2f2; }
+    .qw-total-timer-wrap { display: flex; justify-content: flex-end; margin-bottom: 8px; }
     .qw-review-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; font-size: 13px; }
     .qw-review-row .qw-review-ico { flex-shrink: 0; }
     .qw-review-correct { color: #059669; }
@@ -373,19 +395,27 @@
 
         this.poll = rawData;
 
-        // Проверяем — голосовал ли уже этот пользователь. Пропускаем для
-        // Tier List: там всего один "вопрос"-контейнер карточек, и answers
-        // заполняется уже на первой дуэли — стандартная проверка (сколько
-        // question_id отвечено) решила бы, что опрос пройден полностью,
-        // хотя турнир только начался. У Tier List своя логика возобновления/
-        // завершения через tl_status внутри POST /tierlist/start.
-        if (this.poll.type !== 'tierlist') {
-          const identity = await getIdentity();
+        // Проверка "уже проходил" — три разных механики под разные режимы:
+        //  - tierlist: пропускаем полностью, своя логика через tl_status
+        //    внутри POST /tierlist/start.
+        //  - survey: как раньше, /voted (весь опрос шлётся одним пакетом
+        //    в конце, промежуточного серверного прогресса нет).
+        //  - quiz/test/vote (step-режим): /progress — раньше не
+        //    использовался вообще, виджет всегда начинал с нуля, даже если
+        //    часть ответов уже сохранена на сервере (например вкладку
+        //    закрыли на середине). Теперь резюмируем ровно с того вопроса,
+        //    на котором остановились — question_order фиксируется на
+        //    сервере (учитывает shuffle_q) и заменяет случайный порядок,
+        //    который для показа мог быть отдан отдельно на каждый /polls/{id}.
+        const identity = await getIdentity();
+        this._identity = identity;
+
+        if (this.poll.type === 'tierlist') {
+          // ничего — обрабатывается в tlStart()
+        } else if (this.poll.type === 'survey') {
           const params = new URLSearchParams({
-            fp_id:      identity.fpId      || '',
-            ls_key:     identity.lsKey     || '',
-            cookie_key: identity.cookieKey || '',
-            simple_fp:  identity.simpleFp  || '',
+            fp_id: identity.fpId || '', ls_key: identity.lsKey || '',
+            cookie_key: identity.cookieKey || '', simple_fp: identity.simpleFp || '',
           });
           try {
             const checkRes = await fetch(
@@ -393,9 +423,43 @@
               params.toString() + '&api_key=' + encodeURIComponent(this.apiKey)
             );
             const checkData = await checkRes.json();
-            if (checkData.voted) {
-              this.renderThanks(true);
-              return;
+            if (checkData.voted) { this.renderThanks(true); return; }
+          } catch(_) {}
+        } else {
+          const params = new URLSearchParams({
+            fp_id: identity.fpId || '', ls_key: identity.lsKey || '',
+            cookie_key: identity.cookieKey || '', simple_fp: identity.simpleFp || '',
+          });
+          try {
+            const progRes = await fetch(
+              API_BASE + '/polls/' + this.pollId + '/progress?' +
+              params.toString() + '&api_key=' + encodeURIComponent(this.apiKey)
+            );
+            const prog = await progRes.json();
+            if (prog.is_complete) { this.renderThanks(true); return; }
+
+            this._attemptId = prog.attempt_id || null;
+
+            // Переупорядочиваем вопросы под зафиксированный на сервере
+            // question_order (учитывает shuffle_q для ЭТОЙ попытки) —
+            // иначе индекс шага не совпадёт с тем, что реально отвечено.
+            if (Array.isArray(prog.question_order) && prog.question_order.length) {
+              const byId = {};
+              this.poll.questions.forEach(q => { byId[q.id] = q; });
+              const reordered = prog.question_order.map(id => byId[id]).filter(Boolean);
+              this.poll.questions.forEach(q => {
+                if (!prog.question_order.includes(q.id)) reordered.push(q);
+              });
+              if (reordered.length === this.poll.questions.length) {
+                this.poll.questions = reordered;
+              }
+            }
+
+            if (prog.next_question_id != null) {
+              const idx = this.poll.questions.findIndex(q => q.id === prog.next_question_id);
+              if (idx >= 0) this.step = idx;
+            } else if ((prog.answered_count || 0) > 0) {
+              this.step = this.poll.questions.length - 1;
             }
           } catch(_) {}
         }
@@ -475,6 +539,16 @@
     // как раньше. Раньше этой развилки не было вообще — виджет всегда шёл
     // пошагово, даже для survey, где на сайте ожидается список.
     _startRender() {
+      // timer_total — раньше не было в виджете вообще. Запускаем один раз
+      // (не для каждого шага — clearInterval внутри не трогаем при
+      // переходах между вопросами). Не применяем к tierlist — как и на
+      // сайте, общий таймер минут на "весь опрос" не имеет смысла для
+      // турнирной сетки дуэлей.
+      if (this.poll.timer_total > 0 && this.poll.type !== 'tierlist' && !this._totalTimerStarted) {
+        this._totalTimerStarted = true;
+        this._startTotalTimer(this.poll.timer_total * 60);
+      }
+
       if (this.poll.type === 'tierlist') {
         this.tlStart();
       } else if (this.poll.type === 'survey') {
@@ -482,6 +556,40 @@
       } else {
         this.renderStep();
       }
+    }
+
+    // Общий таймер на весь опрос. По истечении — принудительная отправка
+    // всего, что уже собрано (как showResultsScreen() при обнулении
+    // remaining на сайте). Элемент #qwTotalTimerVal ищется заново на
+    // каждом тике — он переживает re-render, т.к. включён в разметку
+    // и renderStep(), и renderSurveyAll() (см. _totalTimerBadge()).
+    _startTotalTimer(seconds) {
+      let timeLeft = seconds;
+      clearInterval(this._totalTimerInt);
+      const update = () => {
+        const el = this.container.querySelector('#qwTotalTimerVal');
+        if (el) {
+          const m = Math.floor(timeLeft / 60), s = timeLeft % 60;
+          el.textContent = m + ':' + String(s).padStart(2, '0');
+        }
+      };
+      update();
+      this._totalTimerInt = setInterval(() => {
+        timeLeft--;
+        update();
+        if (timeLeft <= 0) {
+          clearInterval(this._totalTimerInt);
+          clearInterval(this._qTimerInt);
+          if (!this.submitted) this.submit();
+        }
+      }, 1000);
+    }
+
+    _totalTimerBadge() {
+      if (!(this.poll.timer_total > 0) || this.poll.type === 'tierlist') return null;
+      return h('div', { className: 'qw-total-timer-wrap' },
+        h('div', { className: 'qw-timer-wrap' }, '⏳ ', h('span', { id: 'qwTotalTimerVal' }, ''))
+      );
     }
 
     renderStep() {
@@ -507,7 +615,14 @@
       const showQNum     = poll.pres_show_q_num !== false;
       const allowBack     = poll.pres_allow_back === true;
 
+      const timerEl = h('span', { className: 'qw-timer-val' }, '');
+      const timerWrap = poll.timer_q > 0
+        ? h('div', { className: 'qw-timer-wrap', id: 'qwTimerWrap' }, '⏱️ ', timerEl)
+        : null;
+
       const body = h('div', { className: 'qw-body' },
+        this._totalTimerBadge(),
+        timerWrap,
         showProgress ? h('div', { className: 'qw-progress-bar' },
           h('div', { className: 'qw-progress-fill', style: 'width:' + pct + '%' })
         ) : null,
@@ -530,6 +645,40 @@
 
       this.render(h('div', {}, header, body));
       this._nextBtn = this.container.querySelector('.qw-btn-primary');
+
+      // timer_q — раньше не было в виджете вообще. По истечении времени —
+      // как на сайте (startTimer() в poll.html) — принудительно переходим
+      // дальше, даже если вопрос не отвечен (required-проверка обходится
+      // только для этого конкретного авто-перехода, не для ручного клика).
+      if (poll.timer_q > 0) {
+        this._startQuestionTimer(q.id, isLastStep);
+      }
+    }
+
+    // Таймер на текущий вопрос. По истечении — принудительный переход
+    // дальше (или отправка, если это был последний вопрос), даже если
+    // ответа нет — так же ведёт себя startTimer() на сайте.
+    _startQuestionTimer(qid, isLastStep) {
+      clearInterval(this._qTimerInt);
+      let timeLeft = this.poll.timer_q;
+      const el = this.container.querySelector('#qwTimerWrap .qw-timer-val');
+      const wrap = this.container.querySelector('#qwTimerWrap');
+      const update = () => {
+        if (el) el.textContent = timeLeft + 'с';
+        if (wrap) {
+          wrap.classList.toggle('qw-timer-warn', timeLeft <= 10 && timeLeft > 5);
+          wrap.classList.toggle('qw-timer-danger', timeLeft <= 5);
+        }
+      };
+      update();
+      this._qTimerInt = setInterval(() => {
+        timeLeft--;
+        update();
+        if (timeLeft <= 0) {
+          clearInterval(this._qTimerInt);
+          this.next(true); // force=true — переходим/отправляем даже без ответа
+        }
+      }, 1000);
     }
 
     // ── Survey-режим: все вопросы одним списком, одна кнопка отправки ──────
@@ -554,6 +703,7 @@
       ));
 
       const body = h('div', { className: 'qw-body' },
+        this._totalTimerBadge(),
         ...blocks,
         poll.captcha ? this._renderCaptcha(poll.captcha) : null,
         h('div', { className: 'qw-actions' },
@@ -1040,13 +1190,17 @@
       }
     }
 
-    next() {
+    async next(force) {
+      clearInterval(this._qTimerInt);
+
       const q   = this.poll.questions[this.step];
       const ans = this.answers[q.id];
 
       // Информационные слайды и неподдерживаемые типы никогда не блокируют
       // переход дальше — на них физически нельзя дать ответ через виджет.
-      const skipValidation = INFO_TYPES.includes(q.type) || UNSUPPORTED_TYPES.includes(q.type);
+      // force=true — вопрос истёк по таймеру (timer_q), пропускаем
+      // required-проверку так же, как делает startTimer() на сайте.
+      const skipValidation = force || INFO_TYPES.includes(q.type) || UNSUPPORTED_TYPES.includes(q.type);
 
       const isEmpty = !skipValidation && (!ans || (
         (!ans.option_ids || ans.option_ids.length === 0) &&
@@ -1057,20 +1211,66 @@
         return;
       }
       if (this.step === this.poll.questions.length - 1) {
-        // Последний шаг — проверяем капчу если включена
+        // Последний шаг — проверяем капчу если включена. Капчу НЕ пропускаем
+        // даже при force=true (истёкший таймер) — это защита от ботов, а не
+        // проверка заполненности, обходить её принудительным таймаутом
+        // небезопасно, да и сервер всё равно отклонит отправку без токена.
         if (this.poll.captcha && !this._captchaToken) {
           if (this._captchaErrorEl) this._captchaErrorEl.classList.add('visible');
           return;
         }
         this.submit();
       } else {
+        // Прогрессивное сохранение — раньше этого не было вообще, всё
+        // копилось только в памяти браузера до самого конца. Если вкладку
+        // закрывали на середине, весь прогресс терялся. Ошибку сохранения
+        // не считаем блокирующей — не хотим ронять UX из-за временного
+        // сбоя сети, финальная отправка на последнем шаге всё равно
+        // пришлёт полный набор ответов ещё раз (upsert на сервере).
+        if (!INFO_TYPES.includes(q.type) && !UNSUPPORTED_TYPES.includes(q.type) && ans) {
+          try { await this._saveProgress(q.id, ans); } catch (_) {}
+        }
         this.step++;
         this.renderStep();
       }
     }
 
     prev() {
+      clearInterval(this._qTimerInt);
       if (this.step > 0) { this.step--; this.renderStep(); }
+    }
+
+
+    // Сохраняет ОДИН ответ на сервере без капчи и без завершающей логики
+    // (final:false) — используется при переходе между вопросами в
+    // step-режиме, чтобы прогресс не терялся при закрытии вкладки.
+    // Раньше этого метода не было вообще.
+    async _saveProgress(qid, ans) {
+      const identity = this._identity || await getIdentity();
+      const payload = {
+        voter_id:   identity.voterId,
+        fp_id:      identity.fpId,
+        ls_key:     identity.lsKey,
+        cookie_key: identity.cookieKey,
+        simple_fp:  identity.simpleFp,
+        final:      false,
+        answers:    [Object.assign({ question_id: qid }, ans)],
+      };
+      if (this.backendUrl) {
+        const proxyUrl = this.backendUrl + '?path=' + encodeURIComponent('/polls/' + this.pollId + '/vote');
+        const res = await fetch(proxyUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Ошибка сохранения прогресса');
+        return data;
+      }
+      return apiFetch('/polls/' + this.pollId + '/vote', this.apiKey, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
     }
 
     async submit() {
@@ -1108,6 +1308,7 @@
               cookie_key:    identity.cookieKey,
               simple_fp:     identity.simpleFp,
               captcha_token: this._captchaToken || undefined,
+              restart:       this._isRestart || undefined,
               answers,
             }),
           });
@@ -1125,10 +1326,14 @@
               cookie_key:    identity.cookieKey,
               simple_fp:     identity.simpleFp,
               captcha_token: this._captchaToken || undefined,
+              restart:       this._isRestart || undefined,
               answers,
             }),
           });
         }
+        this._isRestart = false;
+        clearInterval(this._qTimerInt);
+        clearInterval(this._totalTimerInt);
         this.renderThanks(false, voteResponse);
       } catch (e) {
         this.submitted = false;
@@ -1220,11 +1425,14 @@
         } catch (_) {}
       }
 
-      // pres_show_refill — раньше такой кнопки не было в виджете вообще.
-      // Работает только если опрос не ограничен one_per_user — публичный
-      // API пока не поддерживает принудительный restart (это Premium-фича
-      // сайта с отдельной логикой в answer.php, которой нет в api/pub).
-      const refillBtn = (poll.pres_show_refill && !poll.one_per_user && !alreadyVoted)
+      // pres_show_refill — теперь работает так же, как на сайте: через
+      // restart:true в теле /vote, который api/pub/polls/vote.php обходит
+      // one_per_user ТОЛЬКО если у опроса реально включён pres_show_refill
+      // (honesty-check на бэкенде, как в api/polls/answer.php). Раньше
+      // кнопка была доступна только при one_per_user=0 — то есть де-факто
+      // не работала именно там, где она нужнее всего (опрос "один раз на
+      // человека", но с явным разрешением пройти ещё раз).
+      const refillBtn = (poll.pres_show_refill && !alreadyVoted)
         ? h('button', { className: 'qw-refill-btn', onClick: () => this._restart() },
             poll.refill_btn_text || 'Пройти ещё раз')
         : null;
@@ -1242,14 +1450,19 @@
     }
 
     // Сбрасывает локальное состояние и запускает опрос заново с начала.
-    // Не трогает серверную сторону — просто новый набор ответов уйдёт в
-    // /vote как обычно (сервер сам решает, создавать ли новую попытку,
-    // см. api/pub/polls/vote.php — работает только при one_per_user=0).
+    // this._isRestart=true заставит submit() передать restart:true — сервер
+    // (api/pub/polls/vote.php) обойдёт one_per_user и создаст новую попытку,
+    // но только если владелец опроса разрешил pres_show_refill (иначе
+    // сервер restart проигнорирует — см. комментарий там).
     _restart() {
       this.step = 0;
       this.answers = {};
       this.submitted = false;
       this._captchaToken = null;
+      this._isRestart = true;
+      clearInterval(this._qTimerInt);
+      clearInterval(this._totalTimerInt);
+      this._totalTimerStarted = false;
       this._startRender();
     }
 
