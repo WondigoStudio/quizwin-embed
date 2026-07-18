@@ -627,7 +627,7 @@
           h('div', { className: 'qw-progress-fill', style: 'width:' + pct + '%' })
         ) : null,
         showQNum ? h('div', { className: 'qw-step-label' }, 'Вопрос ' + (this.step + 1) + ' из ' + total) : null,
-        !INFO_TYPES.includes(q.type) ? h('div', { className: 'qw-question' }, q.text) : null,
+        q.text ? h('div', { className: 'qw-question' }, q.text) : null,
         this._renderInput(q),
         // Капча показывается только на последнем шаге если включена в опросе
         isLastStep && poll.captcha ? this._renderCaptcha(poll.captcha) : null,
@@ -698,7 +698,7 @@
 
       const blocks = poll.questions.map((q, i) => h('div', { className: 'qw-survey-block' },
         !INFO_TYPES.includes(q.type) ? h('div', { className: 'qw-survey-num' }, (i + 1) + ' / ' + poll.questions.length) : null,
-        !INFO_TYPES.includes(q.type) ? h('div', { className: 'qw-question' }, q.text) : null,
+        q.text ? h('div', { className: 'qw-question' }, q.text) : null,
         this._renderInput(q)
       ));
 
@@ -1017,31 +1017,36 @@
       }
 
       // ── Информационные слайды — ответа не требуют, только "Далее" ────────
+      // Заголовок (q.text) рендерится снаружи, в renderStep()/renderSurveyAll()
+      // (см. фикс — раньше был баг: title для info_* ошибочно скрывался
+      // условием "!INFO_TYPES.includes", из-за чего info_title без картинки
+      // показывал вообще пустой блок). Здесь — только описание и медиа.
       if (q.type === 'info_title') {
-        // Заголовок уже выводится через .qw-question в renderStep(),
-        // здесь можно добавить только доп. подпись, если она есть.
         this.answers[q.id] = { text_value: 'ack' }; // помечаем как "просмотрено"
-        return q.image_url
-          ? h('div', {}, h('img', { className: 'qw-info-image', src: q.image_url, alt: '' }))
-          : h('div', {});
+        return q.desc ? h('div', { className: 'qw-info-note', style: 'text-align:left;color:#374151;font-size:14px;' }, q.desc) : null;
       }
 
       if (q.type === 'info_image') {
         this.answers[q.id] = { text_value: 'ack' };
-        return q.image_url
-          ? h('img', { className: 'qw-info-image', src: q.image_url, alt: q.text || '' })
-          : h('div', { className: 'qw-info-note' }, 'Изображение не задано');
+        return h('div', {},
+          q.image_url ? h('img', { className: 'qw-info-image', src: q.image_url, alt: q.text || '' }) : null,
+          q.desc ? h('div', { className: 'qw-info-note', style: 'text-align:left;color:#374151;font-size:14px;margin-top:8px;' }, q.desc) : null,
+          (!q.image_url && !q.desc) ? h('div', { className: 'qw-info-note' }, 'Изображение не задано') : null
+        );
       }
 
       if (q.type === 'info_video') {
         this.answers[q.id] = { text_value: 'ack' };
         const embedUrl = _toEmbedVideoUrl(q.image_url);
         if (embedUrl) {
-          return h('iframe', {
-            className: 'qw-info-video', src: embedUrl,
-            allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture',
-            allowfullscreen: 'true',
-          });
+          return h('div', {},
+            h('iframe', {
+              className: 'qw-info-video', src: embedUrl,
+              allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture',
+              allowfullscreen: 'true',
+            }),
+            q.desc ? h('div', { className: 'qw-info-note', style: 'text-align:left;color:#374151;font-size:14px;margin-top:8px;' }, q.desc) : null
+          );
         }
         if (q.image_url) {
           return h('video', { className: 'qw-info-video', src: q.image_url, controls: 'true' });
