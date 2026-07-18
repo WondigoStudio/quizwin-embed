@@ -1023,15 +1023,15 @@
       // показывал вообще пустой блок). Здесь — только описание и медиа.
       if (q.type === 'info_title') {
         this.answers[q.id] = { text_value: 'ack' }; // помечаем как "просмотрено"
-        return q.desc ? h('div', { className: 'qw-info-note', style: 'text-align:left;color:#374151;font-size:14px;' }, q.desc) : null;
+        return q.description ? h('div', { className: 'qw-info-note', style: 'text-align:left;color:#374151;font-size:14px;' }, q.description) : null;
       }
 
       if (q.type === 'info_image') {
         this.answers[q.id] = { text_value: 'ack' };
         return h('div', {},
           q.image_url ? h('img', { className: 'qw-info-image', src: q.image_url, alt: q.text || '' }) : null,
-          q.desc ? h('div', { className: 'qw-info-note', style: 'text-align:left;color:#374151;font-size:14px;margin-top:8px;' }, q.desc) : null,
-          (!q.image_url && !q.desc) ? h('div', { className: 'qw-info-note' }, 'Изображение не задано') : null
+          q.description ? h('div', { className: 'qw-info-note', style: 'text-align:left;color:#374151;font-size:14px;margin-top:8px;' }, q.description) : null,
+          (!q.image_url && !q.description) ? h('div', { className: 'qw-info-note' }, 'Изображение не задано') : null
         );
       }
 
@@ -1045,7 +1045,7 @@
               allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture',
               allowfullscreen: 'true',
             }),
-            q.desc ? h('div', { className: 'qw-info-note', style: 'text-align:left;color:#374151;font-size:14px;margin-top:8px;' }, q.desc) : null
+            q.description ? h('div', { className: 'qw-info-note', style: 'text-align:left;color:#374151;font-size:14px;margin-top:8px;' }, q.description) : null
           );
         }
         if (q.image_url) {
